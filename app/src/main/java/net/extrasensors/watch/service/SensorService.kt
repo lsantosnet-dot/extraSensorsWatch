@@ -1,0 +1,529 @@
+package net.extrasensors.watch.service
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import net.extrasensors.watch.AppGraph
+import net.extrasensors.watch.ClimbLive
+import net.extrasensors.watch.Permissions
+import net.extrasensors.watch.SweatPhase
+import net.extrasensors.watch.data.AppSettings
+import net.extrasensors.watch.data.ClimbPointEntity
+import net.extrasensors.watch.data.ClimbSessionEntity
+import net.extrasensors.watch.data.PressureSampleEntity
+import net.extrasensors.watch.data.SkinTempEntity
+import net.extrasensors.watch.data.SunDayEntity
+import net.extrasensors.watch.data.SweatResultEntity
+import net.extrasensors.watch.domain.Barometry
+import net.extrasensors.watch.domain.ClimbAccumulator
+import net.extrasensors.watch.domain.ExponentialFilter
+import net.extrasensors.watch.domain.Format
+import net.extrasensors.watch.domain.PressurePoint
+import net.extrasensors.watch.domain.RainAlert
+import net.extrasensors.watch.domain.RainTrend
+import net.extrasensors.watch.domain.SunExposure
+import net.extrasensors.watch.graph
+import net.extrasensors.watch.sensor.SkinMeasurement
+import net.extrasensors.watch.sensor.SkinMode
+import net.extrasensors.watch.sensor.SweatOutcome
+import net.extrasensors.watch.sensor.SweatSession
+import java.time.ZoneId
+
+object ServiceController {
+    fun send(context: Context, action: String) {
+        val i = Intent(context, SensorService::class.java).setAction(action)
+        ContextCompat.startForegroundService(context, i)
+    }
+
+    /** Inicia o serviço se a medição em segundo plano estiver ligada e houver permissão de notificação. */
+    suspend fun startIfEnabled(context: Context) {
+        val s = context.graph.settings.current()
+        val activeClimb = context.graph.state.activeClimbSession.first() != null
+        if ((s.background || activeClimb) && Permissions.notificationsGranted(context)) {
+            runCatching { send(context, SensorService.ACTION_START) }
+                .onFailure { Log.w("SensorService", "Não foi possível iniciar o serviço", it) }
+        }
+    }
+
+    fun stopBackground(context: Context) {
+        runCatching { send(context, SensorService.ACTION_STOP_IF_IDLE) }
+    }
+}
+
+/**
+ * Serviço em primeiro plano (tipo "health") que concentra toda a medição fora da tela:
+ * amostras de pressão a cada 5 min, exposição solar (tick de 30 s), detecção de pulso,
+ * sessão de subida, temperatura da pele periódica e corrida de perda de suor.
+ */
+class SensorService : LifecycleService() {
+
+    companion object {
+        const val ACTION_START = "start"
+        const val ACTION_STOP_IF_IDLE = "stop_if_idle"
+        const val ACTION_CLIMB_START = "climb_start"
+        const val ACTION_CLIMB_STOP = "climb_stop"
+        const val ACTION_SWEAT_START = "sweat_start"
+        const val ACTION_SWEAT_FINISH = "sweat_finish"
+        const val ACTION_SWEAT_RESET = "sweat_reset"
+
+        private const val TAG = "SensorService"
+        private const val TICK_MS = 30_000L
+        private const val PRESSURE_PERIOD_MS = 5 * 60_000L
+        private const val PRESSURE_KEEP_MS = 48 * 60 * 60_000L
+        private const val SKIN_PERIOD_MS = 30 * 60_000L
+        // Renovado durante a sessão; o timeout só age se o app travar.
+        private const val SESSION_LOCK_MS = 30 * 60_000L
+
+        @Volatile
+        var instance: SensorService? = null
+            private set
+    }
+
+    private lateinit var g: AppGraph
+    private val zone: ZoneId get() = ZoneId.systemDefault()
+    @Volatile private var settings = AppSettings()
+    @Volatile private var lastLux: Float? = null
+    @Volatile private var onWrist: Boolean = true
+    private val tickMutex = Mutex()
+    private var lastNotifiedText: String? = null
+
+    private lateinit var sunLock: PowerManager.WakeLock
+    private lateinit var sessionLock: PowerManager.WakeLock
+
+    private var climbJob: Job? = null
+    private var sweatJob: Job? = null
+    private var sweatSession: SweatSession? = null
+    private var backgroundStarted = false
+
+    override fun onCreate() {
+        super.onCreate()
+        g = graph
+        instance = this
+        val pm = getSystemService(PowerManager::class.java)
+        sunLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "extrasensors:sun").apply { setReferenceCounted(false) }
+        sessionLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "extrasensors:session").apply { setReferenceCounted(false) }
+
+        val ok = runCatching {
+            ServiceCompat.startForeground(
+                this,
+                Notifications.ID_SERVICE,
+                Notifications.serviceNotification(this, "Medindo sensores", 0),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH,
+            )
+        }.onFailure { Log.e(TAG, "startForeground falhou", it) }.isSuccess
+        if (!ok) {
+            stopSelf()
+            return
+        }
+        g.live.serviceRunning.value = true
+
+        lifecycleScope.launch {
+            g.settings.settings.collect { s ->
+                settings = s
+                if (s.background) startBackground()
+                updateSunWakeLock()
+            }
+        }
+        lifecycleScope.launch { resumeClimbIfActive() }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        when (intent?.action) {
+            ACTION_CLIMB_START -> startClimb()
+            ACTION_CLIMB_STOP -> lifecycleScope.launch { stopClimb() }
+            ACTION_SWEAT_START -> startSweat()
+            ACTION_SWEAT_FINISH -> finishSweat()
+            ACTION_SWEAT_RESET -> resetSweat()
+            ACTION_STOP_IF_IDLE -> lifecycleScope.launch { stopIfIdle() }
+        }
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        instance = null
+        g.live.serviceRunning.value = false
+        g.live.onWrist.value = null
+        cancelAlarm()
+        sweatSession?.cancel()
+        if (::sunLock.isInitialized && sunLock.isHeld) sunLock.release()
+        if (::sessionLock.isInitialized && sessionLock.isHeld) sessionLock.release()
+        super.onDestroy()
+    }
+
+    // ---------------- Medição de fundo ----------------
+
+    private fun startBackground() {
+        if (backgroundStarted) return
+        backgroundStarted = true
+
+        if (g.light.available) {
+            lifecycleScope.launch {
+                runCatching {
+                    // Batching de até 20 s no hardware para poupar bateria.
+                    g.light.readings(batchLatencyUs = 20_000_000).collect { r ->
+                        val wasBright = isBright()
+                        lastLux = r.value
+                        g.live.lastLux.value = r.value
+                        updateSunWakeLock()
+                        if (!wasBright && isBright()) tick()
+                    }
+                }.onFailure { Log.w(TAG, "Sensor de luz", it) }
+            }
+        }
+        if (g.offBody.available) {
+            lifecycleScope.launch {
+                runCatching {
+                    g.offBody.onWrist().collect {
+                        onWrist = it
+                        g.live.onWrist.value = it
+                        updateSunWakeLock()
+                    }
+                }.onFailure { Log.w(TAG, "Sensor de pulso", it) }
+            }
+        } else {
+            g.live.onWrist.value = true
+        }
+        lifecycleScope.launch {
+            while (isActive) {
+                tick()
+                delay(TICK_MS)
+            }
+        }
+        lifecycleScope.launch { startSkinContinuousIfSupported() }
+        onAlarm()
+    }
+
+    private fun isBright(): Boolean = (lastLux ?: 0f) > settings.luxThreshold
+
+    /** Mantém a CPU acordada só enquanto há luz forte no pulso, para os ticks de 30 s acontecerem. */
+    private fun updateSunWakeLock() {
+        val want = settings.background && isBright() && onWrist
+        // Renovado a cada tick; o timeout garante a liberação se algo travar.
+        if (want) sunLock.acquire(10 * 60_000L)
+        if (!want && sunLock.isHeld) sunLock.release()
+    }
+
+    private suspend fun tick() = tickMutex.withLock {
+        if (!settings.background) return@withLock
+        val now = System.currentTimeMillis()
+        val cfg = settings.sunConfig
+        var goal = false
+        var closed: net.extrasensors.watch.domain.ClosedDay? = null
+        val s = g.state.updateSun({ SunExposure.initial(now, zone) }) { st ->
+            val r = SunExposure.onTick(st, now, lastLux, onWrist, cfg, zone)
+            goal = r.goalReached
+            closed = r.closedDay
+            r.state
+        }
+        closed?.let {
+            g.db.sun().upsertDay(SunDayEntity(it.epochDay, it.totalMs))
+            g.db.sun().deleteDaysBefore(s.epochDay - 365)
+            g.db.sun().deleteApplicationsBefore(now - 30L * 24 * 3600_000)
+        }
+        g.db.sun().upsertDay(SunDayEntity(s.epochDay, s.todayMs))
+        if (goal && settings.sunAlert) Notifications.sunAlert(this)
+        refreshNotification(s.sinceApplicationMs)
+    }
+
+    private fun refreshNotification(sinceMs: Long? = null) {
+        val climb = g.live.climb.value
+        val sweat = g.live.sweat.value
+        val (text, page) = when {
+            sweat is SweatPhase.Running -> "Corrida em andamento" to 8
+            climb != null -> "Subida ${Format.number(climb.gain)} m" to 3
+            sinceMs != null -> "Sol ${Format.duration(sinceMs)} desde o protetor" to 5
+            else -> (lastNotifiedText ?: "Medindo sensores") to 0
+        }
+        if (text != lastNotifiedText) {
+            lastNotifiedText = text
+            Notifications.updateService(this, text, page)
+            Notifications.requestComplicationUpdate(this)
+        }
+    }
+
+    // ---------------- Alarme de 5 min: pressão, chuva, pele ----------------
+
+    private fun alarmIntent(): PendingIntent = PendingIntent.getBroadcast(
+        this, 1, Intent(this, AlarmReceiver::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    // USE_EXACT_ALARM é concedida na instalação; canScheduleExactAlarms() é checado abaixo.
+    @SuppressLint("MissingPermission")
+    private fun scheduleAlarm() {
+        val am = getSystemService(AlarmManager::class.java)
+        val at = SystemClock.elapsedRealtime() + PRESSURE_PERIOD_MS
+        if (am.canScheduleExactAlarms()) {
+            am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, alarmIntent())
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, alarmIntent())
+        }
+    }
+
+    private fun cancelAlarm() {
+        runCatching { getSystemService(AlarmManager::class.java).cancel(alarmIntent()) }
+    }
+
+    /** Chamado pelo [AlarmReceiver] (e na inicialização). */
+    fun onAlarm() {
+        val lock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "extrasensors:alarm")
+        lock.acquire(60_000)
+        scheduleAlarm()
+        lifecycleScope.launch {
+            try {
+                if (settings.background) {
+                    samplePressure()
+                    tick()
+                    periodicSkin()
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Falha no alarme", t)
+            } finally {
+                if (lock.isHeld) lock.release()
+            }
+        }
+    }
+
+    private suspend fun samplePressure() {
+        if (!g.pressure.available) return
+        val hPa = g.pressure.sampleMedian(10_000) ?: return
+        val now = System.currentTimeMillis()
+        val dao = g.db.pressure()
+        dao.insert(PressureSampleEntity(timeMillis = now, hPa = hPa))
+        dao.deleteBefore(now - PRESSURE_KEEP_MS)
+
+        val samples = dao.since(now - RainTrend.WINDOW_MS - 2 * RainTrend.TOLERANCE_MS)
+            .map { PressurePoint(it.timeMillis, it.hPa) }
+        val t = settings.thresholds
+        val result = RainTrend.compute(samples, now, t)
+        val (newState, fire) = RainAlert.evaluate(result, g.state.rainAlert(), now, t)
+        g.state.setRainAlert(newState)
+        if (fire && settings.rainAlert) Notifications.rainAlert(this)
+    }
+
+    // ---------------- Temperatura da pele ----------------
+
+    private fun healthPermitted(): Boolean =
+        Permissions.healthRequired(this).all { Permissions.granted(this, it) }
+
+    private suspend fun startSkinContinuousIfSupported() {
+        if (!healthPermitted()) return
+        val mode = g.skin.mode().getOrElse {
+            g.live.skinError.value = it.message
+            return
+        }
+        if (mode != SkinMode.CONTINUOUS) return
+        var lastSaved = g.db.skin().latest()?.timeMillis ?: 0L
+        g.skin.continuous().collect { m ->
+            when (m) {
+                is SkinMeasurement.Success -> {
+                    g.live.skinError.value = null
+                    if (m.timeMillis - lastSaved >= SKIN_PERIOD_MS) {
+                        g.db.skin().insert(SkinTempEntity(timeMillis = m.timeMillis, celsius = m.celsius))
+                        g.db.skin().deleteBefore(m.timeMillis - 30L * 24 * 3600_000)
+                        lastSaved = m.timeMillis
+                    }
+                }
+                is SkinMeasurement.Failure -> Unit
+            }
+        }
+    }
+
+    /** Sem leitura contínua: uma medição sob demanda a cada 30 min, com o relógio no pulso. */
+    private suspend fun periodicSkin() {
+        if (!onWrist || !healthPermitted()) return
+        val mode = g.skin.mode().getOrNull() ?: return
+        if (mode != SkinMode.ON_DEMAND) return
+        val now = System.currentTimeMillis()
+        val last = g.db.skin().latest()?.timeMillis ?: 0L
+        if (now - last < SKIN_PERIOD_MS) return
+        val m = g.skin.measureOnce(30_000)
+        if (m is SkinMeasurement.Success) {
+            g.db.skin().insert(SkinTempEntity(timeMillis = m.timeMillis, celsius = m.celsius))
+            g.db.skin().deleteBefore(now - 30L * 24 * 3600_000)
+        }
+    }
+
+    // ---------------- Subida acumulada ----------------
+
+    private suspend fun resumeClimbIfActive() {
+        val id = g.state.activeClimbSession.first() ?: return
+        val s = g.db.climb().latestSession()
+        if (s == null || s.id != id || s.endedAt != null) {
+            g.state.setActiveClimbSession(null)
+            return
+        }
+        runClimb(s)
+    }
+
+    private fun startClimb() {
+        if (climbJob?.isActive == true || !g.pressure.available) return
+        lifecycleScope.launch {
+            val now = System.currentTimeMillis()
+            val id = g.db.climb().insertSession(ClimbSessionEntity(startedAt = now))
+            g.state.setActiveClimbSession(id)
+            g.db.climb().deletePointsExcept(id)
+            runClimb(ClimbSessionEntity(id = id, startedAt = now))
+        }
+    }
+
+    private fun holdSessionLock() = sessionLock.acquire(SESSION_LOCK_MS)
+
+    private fun runClimb(session: ClimbSessionEntity) {
+        holdSessionLock()
+        climbJob = lifecycleScope.launch {
+            var acc = ClimbAccumulator(gain = session.gain, loss = session.loss)
+            var minAlt = session.minAltitude
+            var maxAlt = session.maxAltitude
+            val filter = ExponentialFilter(0.2)
+            var lastSaved = 0L
+            var current = session
+            g.live.climb.value = ClimbLive(session.id, session.startedAt, acc.gain, acc.loss, null)
+            refreshNotification()
+            runCatching {
+                g.pressure.readings(1_000_000).collect { r ->
+                    val p = filter.add(r.value.toDouble())
+                    val alt = Barometry.altitude(settings.p0, p)
+                    acc = acc.add(alt)
+                    minAlt = minOf(minAlt ?: alt, alt)
+                    maxAlt = maxOf(maxAlt ?: alt, alt)
+                    g.live.climb.value = ClimbLive(session.id, session.startedAt, acc.gain, acc.loss, alt)
+                    val now = System.currentTimeMillis()
+                    if (now - lastSaved >= 10_000) {
+                        lastSaved = now
+                        holdSessionLock()
+                        current = current.copy(gain = acc.gain, loss = acc.loss, minAltitude = minAlt, maxAltitude = maxAlt)
+                        g.db.climb().upsertSession(current)
+                        g.db.climb().insertPoint(ClimbPointEntity(sessionId = session.id, timeMillis = now, altitude = alt))
+                        refreshNotification()
+                    }
+                }
+            }.onFailure { if (it !is kotlinx.coroutines.CancellationException) Log.w(TAG, "Subida", it) }
+        }
+    }
+
+    private suspend fun stopClimb() {
+        val live = g.live.climb.value
+        climbJob?.cancel()
+        climbJob = null
+        val s = g.db.climb().latestSession()
+        if (s != null && s.endedAt == null) {
+            g.db.climb().upsertSession(
+                s.copy(
+                    endedAt = System.currentTimeMillis(),
+                    gain = live?.gain ?: s.gain,
+                    loss = live?.loss ?: s.loss,
+                )
+            )
+        }
+        g.state.setActiveClimbSession(null)
+        g.live.climb.value = null
+        releaseSessionLockIfIdle()
+        refreshNotification(g.state.sun.first()?.sinceApplicationMs)
+        stopIfIdle()
+    }
+
+    // ---------------- Perda de suor ----------------
+
+    private fun startSweat() {
+        if (sweatJob?.isActive == true) return
+        g.live.sweat.value = SweatPhase.Starting
+        sweatJob = lifecycleScope.launch {
+            val profile = settings.profile
+            if (profile == null) {
+                g.live.sweat.value = SweatPhase.Error("Configure seu perfil em Ajustes.")
+                return@launch
+            }
+            val session = g.sweat.start(profile).getOrElse {
+                g.live.sweat.value = SweatPhase.Error(it.message ?: "Não foi possível iniciar.")
+                return@launch
+            }
+            sweatSession = session
+            holdSessionLock()
+            val startedAt = System.currentTimeMillis()
+            g.live.sweat.value = SweatPhase.Running(startedAt)
+            refreshNotification()
+            if (g.steps.available && Permissions.granted(this@SensorService, Manifest.permission.ACTIVITY_RECOGNITION)) {
+                val window = ArrayDeque<Pair<Long, Float>>()
+                var lastFeed = 0L
+                runCatching {
+                    g.steps.counts().collect { r ->
+                        val now = System.currentTimeMillis()
+                        window.addLast(now to r.value)
+                        while (window.size > 1 && now - window.first().first > 60_000) window.removeFirst()
+                        if (now - lastFeed >= 10_000 && window.size > 1) {
+                            lastFeed = now
+                            holdSessionLock()
+                            val (t0, s0) = window.first()
+                            val minutes = (now - t0) / 60_000.0
+                            if (minutes > 0) session.feedStepsPerMinute(((r.value - s0) / minutes).toFloat(), now)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun finishSweat() {
+        val session = sweatSession ?: return
+        val running = g.live.sweat.value as? SweatPhase.Running ?: return
+        sweatJob?.cancel()
+        sweatSession = null
+        g.live.sweat.value = SweatPhase.Calculating
+        lifecycleScope.launch {
+            val outcome = session.finish()
+            val now = System.currentTimeMillis()
+            g.live.sweat.value = when (outcome) {
+                is SweatOutcome.Success -> {
+                    g.db.sweat().insert(SweatResultEntity(timeMillis = now, liters = outcome.liters, durationMs = now - running.startedAt))
+                    SweatPhase.Done(outcome.liters)
+                }
+                is SweatOutcome.Failure -> SweatPhase.Error(outcome.message)
+            }
+            releaseSessionLockIfIdle()
+            refreshNotification(g.state.sun.first()?.sinceApplicationMs)
+            stopIfIdle()
+        }
+    }
+
+    private fun resetSweat() {
+        if (g.live.sweat.value is SweatPhase.Running || g.live.sweat.value is SweatPhase.Calculating) return
+        g.live.sweat.value = SweatPhase.Idle
+        lifecycleScope.launch { stopIfIdle() }
+    }
+
+    private fun releaseSessionLockIfIdle() {
+        val sweatBusy = g.live.sweat.value is SweatPhase.Running || g.live.sweat.value is SweatPhase.Calculating
+        if (g.live.climb.value == null && !sweatBusy && sessionLock.isHeld) sessionLock.release()
+    }
+
+    /** Para o serviço quando a medição de fundo está desligada e não há sessão ativa. */
+    private suspend fun stopIfIdle() {
+        val s = g.settings.current()
+        val sweatBusy = g.live.sweat.value is SweatPhase.Running || g.live.sweat.value is SweatPhase.Calculating ||
+            g.live.sweat.value is SweatPhase.Starting
+        if (!s.background && g.live.climb.value == null && !sweatBusy) {
+            stopSelf()
+        }
+    }
+}
