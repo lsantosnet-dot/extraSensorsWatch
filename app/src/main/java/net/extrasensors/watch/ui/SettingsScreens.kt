@@ -395,9 +395,11 @@ fun DiagnosticsScreen(g: AppGraph) {
     val pm = context.getSystemService(android.os.PowerManager::class.java)
     val unrestricted = pm.isIgnoringBatteryOptimizations(context.packageName)
     fun t(v: Long?): String = v?.let {
-        val ago = (now - it) / 60_000
+        val diff = now - it
+        val rel = if (diff >= 0) "há ${net.extrasensors.watch.domain.Format.duration(diff)}"
+        else "daqui a ${net.extrasensors.watch.domain.Format.duration(-diff)}"
         java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault())
-            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")) + " (há $ago min)"
+            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")) + " ($rel)"
     } ?: "nunca"
     RoundPage {
         PageLabel("Diagnóstico", Palette.Secondary)
