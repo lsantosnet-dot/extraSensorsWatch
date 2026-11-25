@@ -4,6 +4,7 @@ import net.extrasensors.phone.data.SkinRow
 import net.extrasensors.phone.data.SunBucketRow
 import net.extrasensors.phone.data.SunDayRow
 import net.extrasensors.phone.data.UvRow
+import net.extrasensors.shared.UvMath
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -30,8 +31,19 @@ data class Period(val firstDay: LocalDate, val lastDay: LocalDate) {
     }
 }
 
-/** Um ponto do gráfico de sol: uma hora ("Hoje") ou um dia. */
-data class SunPoint(val start: Long, val exposedMs: Long, val doseSed: Double, val uv: Double?)
+/**
+ * Um ponto do gráfico de sol: uma hora ("Hoje") ou um dia.
+ * [uv] é a previsão: o índice da hora ("Hoje") ou o máximo previsto do dia.
+ * [exposureUv] é o índice médio enquanto você esteve no sol, calculado pela dose recebida.
+ */
+data class SunPoint(
+    val start: Long,
+    val exposedMs: Long,
+    val doseSed: Double,
+    val uv: Double?,
+    val exposureUv: Double? = null,
+    val exposedHighUv: Boolean = false,
+)
 
 data class SunSummary(
     val totalMs: Long,
@@ -52,6 +64,14 @@ object Stats {
 
     private fun dayOf(t: Long, zone: ZoneId): LocalDate = Instant.ofEpochMilli(t).atZone(zone).toLocalDate()
 
+    /** Índice UV médio durante a exposição: dose / (0,9 SED/h × horas expostas). */
+    private fun exposureUv(exposedMs: Long, doseSed: Double, buckets: List<SunBucketRow>): Double? {
+        if (exposedMs <= 0 || buckets.none { it.maxUv != null }) return null
+        return doseSed / (UvMath.SED_PER_UVI_HOUR * exposedMs / HOUR.toDouble())
+    }
+
+    private fun highUv(buckets: List<SunBucketRow>) = buckets.any { (it.maxUv ?: 0.0) >= UvMath.VERY_HIGH_UVI }
+
     fun sunSeries(
         period: Period,
         buckets: List<SunBucketRow>,
@@ -65,11 +85,15 @@ object Stats {
                 val s = dayStart.plusHours(h.toLong()).toInstant().toEpochMilli()
                 val e = s + HOUR
                 val inHour = buckets.filter { it.bucketStart in s until e }
+                val exposed = inHour.sumOf { it.exposedMs }
+                val dose = inHour.sumOf { it.doseSed }
                 SunPoint(
                     start = s,
-                    exposedMs = inHour.sumOf { it.exposedMs },
-                    doseSed = inHour.sumOf { it.doseSed },
+                    exposedMs = exposed,
+                    doseSed = dose,
                     uv = uv.firstOrNull { it.hourStart == s }?.uvi ?: inHour.mapNotNull { it.maxUv }.maxOrNull(),
+                    exposureUv = exposureUv(inHour.sumOf { it.exposedMs }, dose, inHour),
+                    exposedHighUv = highUv(inHour),
                 )
             }
         }
@@ -82,7 +106,15 @@ object Stats {
             // O total diário do relógio é a fonte principal; os blocos cobrem dias sem total.
             val exposed = maxOf(totals[d.toEpochDay()]?.totalMs ?: 0L, b.sumOf { it.exposedMs })
             val uvMax = uvByDay[d]?.maxOfOrNull { it.uvi } ?: b.mapNotNull { it.maxUv }.maxOrNull()
-            SunPoint(d.atStartOfDay(zone).toInstant().toEpochMilli(), exposed, b.sumOf { it.doseSed }, uvMax)
+            val dose = b.sumOf { it.doseSed }
+            SunPoint(
+                start = d.atStartOfDay(zone).toInstant().toEpochMilli(),
+                exposedMs = exposed,
+                doseSed = dose,
+                uv = uvMax,
+                exposureUv = exposureUv(b.sumOf { it.exposedMs }, dose, b),
+                exposedHighUv = highUv(b),
+            )
         }
     }
 
@@ -91,10 +123,11 @@ object Stats {
         // A média considera só os dias do período que já começaram.
         val elapsedDays = (minOf(period.lastDay, today).toEpochDay() - period.firstDay.toEpochDay() + 1)
             .coerceAtLeast(1)
+        // Conta exposição real com UV 8+, não só a previsão do dia.
         val highUvDays = if (period.hourly) {
-            if (points.any { (it.uv ?: 0.0) >= 8.0 }) 1 else 0
+            if (points.any { it.exposedHighUv }) 1 else 0
         } else {
-            points.count { (it.uv ?: 0.0) >= 8.0 }
+            points.count { it.exposedHighUv }
         }
         return SunSummary(
             totalMs = total,

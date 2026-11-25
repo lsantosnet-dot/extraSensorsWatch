@@ -88,4 +88,19 @@ class StatsTest {
         assertEquals(3, sum.count)
         assertNull(Stats.skinSummary(emptyList()))
     }
+
+    @Test
+    fun `UV no sol vem da dose e nao do maximo previsto do dia`() {
+        // Caso real: 4 min de sol às 7h30 com UV ~1, num dia de máximo previsto 9,6.
+        val d = today
+        val buckets = listOf(SunBucketRow(at(d, 7, 30), 240_000, 0.06, 1.1))
+        val uv = listOf(UvRow(at(d, 7), 0.8), UvRow(at(d, 12), 9.6))
+        val p = Period(today.minusDays(6), today)
+        val s = Stats.sunSeries(p, buckets, emptyList(), uv, zone)
+        val pt = s.last()
+        assertEquals(9.6, pt.uv!!, 1e-9) // previsão máxima do dia
+        assertEquals(1.0, pt.exposureUv!!, 1e-9) // 0,06 SED / (0,9 × 4/60 h)
+        assertFalse(pt.exposedHighUv)
+        assertEquals(0, Stats.sunSummary(s, p, 0, today).highUvDays)
+    }
 }

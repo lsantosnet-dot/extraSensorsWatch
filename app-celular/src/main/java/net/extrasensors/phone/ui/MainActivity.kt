@@ -303,21 +303,26 @@ private fun SunTab(vm: PhoneViewModel) {
             Triple("Tempo ao sol", duration(s.totalMs), null),
             Triple("Média por dia", duration(s.averagePerDayMs), null),
             Triple("Dose de UV", "${num(s.doseSed, 1)} SED", "pele tipo II avermelha com ~${num(med, 1)} SED"),
-            Triple("Protetor aplicado", "${s.sunscreenCount}×", if (s.highUvDays > 0) "${s.highUvDays} dia(s) com UV 8+" else null),
+            Triple("Protetor aplicado", "${s.sunscreenCount}×", if (s.highUvDays > 0) "${s.highUvDays} dia(s) no sol com UV 8+" else null),
         )
     )
-    ChartCard(if (period.hourly) "Minutos ao sol por hora e índice UV" else "Minutos ao sol por dia e UV máximo") {
+    ChartCard(if (period.hourly) "Minutos ao sol por hora e índice UV previsto" else "Minutos ao sol por dia e UV máximo previsto do dia") {
         if (!s.hasData) {
             Empty("Sem dados de sol neste período. Os dados chegam do relógio quando ele está conectado por Bluetooth.")
         } else {
             SunChart(u.points, period.hourly, vm.zone, selected) { selected = it }
-            Legend(listOf(ChartColors.sun() to "Minutos ao sol", ChartColors.uv() to "Índice UV"))
+            Legend(listOf(ChartColors.sun() to "Minutos ao sol", ChartColors.uv() to if (period.hourly) "UV previsto" else "UV máx. previsto"))
             selected?.let { i ->
                 val p = u.points[i]
                 val t = Instant.ofEpochMilli(p.start).atZone(vm.zone)
                 val label = if (period.hourly) "${t.hour}h" else t.format(DateTimeFormatter.ofPattern("dd/MM"))
-                val uv = p.uv?.let { " · UV ${num(it, 1)} (${UvMath.category(it)})" } ?: ""
-                Text("$label: ${duration(p.exposedMs)} ao sol · ${num(p.doseSed, 2)} SED$uv",
+                // Distingue o UV enquanto você estava no sol (pela dose) da previsão do dia/hora.
+                val exposed = p.exposureUv?.let { "UV no sol ~${num(it, 1)} (${UvMath.category(it)})" }
+                val forecast = p.uv?.let {
+                    (if (period.hourly) "UV previsto ${num(it, 1)}" else "máx. previsto do dia ${num(it, 1)}")
+                }
+                val parts = listOfNotNull("${duration(p.exposedMs)} ao sol", "${num(p.doseSed, 2)} SED", exposed, forecast)
+                Text("$label: " + parts.joinToString(" · "),
                     style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
             }
         }
