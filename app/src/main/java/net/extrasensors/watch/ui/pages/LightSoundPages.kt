@@ -154,7 +154,8 @@ fun SunPage(g: AppGraph, openSettings: () -> Unit) {
         Meter((since.toFloat() / goal).coerceIn(0f, 1f), Palette.Sun, "Progresso até a meta", marker = false)
         MeterLegend("0", "alerta em ${Format.duration(goal)}")
         if (reached) Pill("Hora de reaplicar protetor", Palette.Sun, filled = true)
-        Secondary("Hoje: ${Format.duration(today)} no total", top = 6.dp)
+        ActionButton("Apliquei protetor", Palette.Sun, vm::apply)
+        Secondary("Hoje: ${Format.duration(today)} no total", top = 8.dp)
         val last = s?.lastApplicationAt
         if (last != null && isToday(last, now)) Secondary("Protetor aplicado às ${timeOf(last)}")
         val status = when {
@@ -163,7 +164,6 @@ fun SunPage(g: AppGraph, openSettings: () -> Unit) {
             else -> "Medindo em segundo plano"
         }
         Secondary(status, Palette.Secondary, 12.sp)
-        ActionButton("Apliquei protetor", Palette.Sun, vm::apply)
     }
 }
 

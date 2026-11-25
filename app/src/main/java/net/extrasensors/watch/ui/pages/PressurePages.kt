@@ -214,16 +214,16 @@ fun ClimbPage(g: AppGraph, start: () -> Unit, stop: () -> Unit) {
 
     RoundPage {
         PageLabel(label, Palette.Climb)
-        BigValue(Format.number(gain), "m")
-        Secondary("Descida ${Format.number(loss)} m", Palette.Support, 15.sp)
+        BigValue(Format.number(gain), "m", sizeFraction = 0.18f)
+        Secondary("Descida ${Format.number(loss)} m", Palette.Support, 14.sp, top = 0.dp)
         if (points.size >= 2) {
             Sparkline(
                 points.map { it.altitude }, Palette.Climb, "Perfil de altitude da sessão",
-                height = 40.dp, fill = Color(0xFF2A1A24), minRange = 5.0,
+                height = 30.dp, fill = Color(0xFF2A1A24), minRange = 5.0,
             )
         }
         val altText = currentAlt?.let { " · altitude atual ${Format.number(it)} m" } ?: ""
-        Secondary(Format.clock(endedAt - startedAt) + altText)
+        Secondary(Format.clock(endedAt - startedAt) + altText, size = 12.sp)
         if (active) {
             net.extrasensors.watch.ui.components.ActionButton("Parar", Palette.Climb, stop)
         } else {
