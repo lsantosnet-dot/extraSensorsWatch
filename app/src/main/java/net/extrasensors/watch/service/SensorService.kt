@@ -86,6 +86,7 @@ class SensorService : LifecycleService() {
         const val ACTION_SWEAT_START = "sweat_start"
         const val ACTION_SWEAT_FINISH = "sweat_finish"
         const val ACTION_SWEAT_RESET = "sweat_reset"
+        const val ACTION_SAMPLE_NOW = "sample_now"
 
         private const val TAG = "SensorService"
         private const val TICK_MS = 30_000L
@@ -138,6 +139,7 @@ class SensorService : LifecycleService() {
             return
         }
         g.live.serviceRunning.value = true
+        lifecycleScope.launch { g.state.setDiagServiceStart(System.currentTimeMillis()) }
 
         lifecycleScope.launch {
             g.settings.settings.collect { s ->
@@ -158,6 +160,7 @@ class SensorService : LifecycleService() {
             ACTION_SWEAT_FINISH -> finishSweat()
             ACTION_SWEAT_RESET -> resetSweat()
             ACTION_STOP_IF_IDLE -> lifecycleScope.launch { stopIfIdle() }
+            ACTION_SAMPLE_NOW -> onAlarm()
         }
         return START_STICKY
     }
@@ -209,6 +212,10 @@ class SensorService : LifecycleService() {
         lifecycleScope.launch {
             while (isActive) {
                 tick()
+                // Redundância: se o alarme de 5 min atrasar (Doze), o próprio tick amostra.
+                if (System.currentTimeMillis() - lastSampleAt > 6 * 60_000L) {
+                    launch { runCatching { samplePressure() } }
+                }
                 delay(TICK_MS)
             }
         }
@@ -315,6 +322,7 @@ class SensorService : LifecycleService() {
         scheduleAlarm()
         lifecycleScope.launch {
             try {
+                g.state.setDiagAlarm(System.currentTimeMillis())
                 if (settings.background) {
                     samplePressure()
                     tick()
@@ -330,10 +338,28 @@ class SensorService : LifecycleService() {
         }
     }
 
-    private suspend fun samplePressure() {
-        if (!g.pressure.available) return
-        val hPa = g.pressure.sampleMedian(10_000) ?: return
+    private val sampleMutex = Mutex()
+    @Volatile private var lastSampleAt = 0L
+
+    /** Amostra de pressão; também chamada pelo tick, se o alarme atrasar mais de 6 min. */
+    private suspend fun samplePressure() = sampleMutex.withLock {
+        if (!g.pressure.available) {
+            g.state.setDiagSample(null, "Barômetro indisponível")
+            return@withLock
+        }
+        val hPa = try {
+            g.pressure.sampleMedian(10_000)
+        } catch (t: Throwable) {
+            g.state.setDiagSample(null, "Erro no barômetro: ${t.message}")
+            return@withLock
+        }
+        if (hPa == null) {
+            g.state.setDiagSample(null, "Barômetro não respondeu em 20 s")
+            return@withLock
+        }
         val now = System.currentTimeMillis()
+        lastSampleAt = now
+        g.state.setDiagSample(now, null)
         val dao = g.db.pressure()
         dao.insert(PressureSampleEntity(timeMillis = now, hPa = hPa))
         dao.deleteBefore(now - PRESSURE_KEEP_MS)

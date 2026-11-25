@@ -18,6 +18,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- Permite pedir para o sistema não restringir o app em segundo plano (uso pessoal). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Decibelímetro -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Cadência de passos para o tracker de perda de suor -->

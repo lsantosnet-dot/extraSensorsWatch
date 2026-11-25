@@ -26,6 +26,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalView
+import androidx.core.net.toUri
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -137,6 +138,7 @@ fun SettingsListScreen(
     onCalibrate: () -> Unit,
     onGender: () -> Unit,
     onSkinType: () -> Unit,
+    onDiagnostics: () -> Unit,
     onAbout: () -> Unit,
 ) {
     val s by g.settings.settings.collectAsStateWithLifecycle(AppSettings())
@@ -190,6 +192,7 @@ fun SettingsListScreen(
                     }
                 }
             }
+            item { SettingButton("Diagnóstico", "serviço, alarmes e amostras", onDiagnostics) }
             item { SettingButton("Sobre as medições", null, onAbout) }
         }
     }
@@ -369,6 +372,56 @@ fun SkinTypeScreen(g: AppGraph, done: () -> Unit) {
         Secondary("Define a dose de UV que avermelha a pele (MED).", top = 6.dp)
         net.extrasensors.shared.SkinType.entries.forEach { t ->
             SecondaryButton("${t.label}: ${t.description}", { scope.launch { g.settings.setSkinType(t); done() } })
+        }
+    }
+}
+
+/** Mostra o que o serviço de fundo está fazendo de fato, para investigar coleta parada. */
+// App de uso pessoal, fora da Play Store: pedir a isenção de otimização de bateria é aceitável.
+@android.annotation.SuppressLint("BatteryLife")
+@Composable
+fun DiagnosticsScreen(g: AppGraph) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val d by g.state.diagnostics.collectAsStateWithLifecycle(null)
+    val running by g.live.serviceRunning.collectAsStateWithLifecycle()
+    val now = net.extrasensors.watch.ui.components.rememberNow(5_000)
+    var samples3h by remember { mutableStateOf<Int?>(null) }
+    var lastUv by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(now) {
+        samples3h = g.db.pressure().since(now - 3 * 3_600_000L).size
+        lastUv = g.db.uv().lastHour()
+    }
+    val am = context.getSystemService(android.app.AlarmManager::class.java)
+    val pm = context.getSystemService(android.os.PowerManager::class.java)
+    val unrestricted = pm.isIgnoringBatteryOptimizations(context.packageName)
+    fun t(v: Long?): String = v?.let {
+        val ago = (now - it) / 60_000
+        java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")) + " (há $ago min)"
+    } ?: "nunca"
+    RoundPage {
+        PageLabel("Diagnóstico", Palette.Secondary)
+        AboutItem("Serviço", if (running) "rodando · iniciado ${t(d?.serviceStartAt)}" else "parado")
+        AboutItem("Último alarme (5 min)", t(d?.alarmAt))
+        AboutItem("Última amostra de pressão", t(d?.sampleAt))
+        d?.sampleError?.let { AboutItem("Erro na amostra", it) }
+        AboutItem("Amostras nas últimas 3 h", samples3h?.toString() ?: "…")
+        AboutItem("Alarmes exatos", if (am.canScheduleExactAlarms()) "permitidos" else "BLOQUEADOS")
+        AboutItem("Bateria", if (unrestricted) "sem restrição" else "otimizada pelo sistema (pode atrasar a coleta)")
+        AboutItem("Previsão de UV até", lastUv?.let { t(it) } ?: "sem previsão")
+        AboutItem("Último envio ao celular", t(d?.syncPushAt))
+        SecondaryButton("Coletar amostra agora", {
+            ServiceController.send(context, net.extrasensors.watch.service.SensorService.ACTION_SAMPLE_NOW)
+        })
+        if (!unrestricted) {
+            SecondaryButton("Liberar bateria", {
+                val pkg = "package:${context.packageName}".toUri()
+                runCatching {
+                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg))
+                }.onFailure {
+                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg))
+                }
+            })
         }
     }
 }

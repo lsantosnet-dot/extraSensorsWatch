@@ -72,9 +72,16 @@ class AndroidPressureSource(context: Context) : PressureSource {
         if (sensor == null) return null
         val values = mutableListOf<Double>()
         withTimeoutOrNull(durationMs) {
-            readings(SensorManager.SENSOR_DELAY_NORMAL).collect { values += it.value.toDouble() }
+            // 5 Hz explícito: alguns relógios ignoram SENSOR_DELAY_NORMAL com a tela apagada.
+            readings(200_000).collect { values += it.value.toDouble() }
         }
-        return if (values.isEmpty()) null else median(values)
+        if (values.isEmpty()) {
+            // Segunda tentativa, mais rápida e mais longa.
+            withTimeoutOrNull(durationMs) {
+                readings(SensorManager.SENSOR_DELAY_UI).collect { values += it.value.toDouble() }
+            }
+        }
+        return if (values.isEmpty()) null else median(values.filter { it in 300.0..1100.0 }.ifEmpty { values })
     }
 }
 

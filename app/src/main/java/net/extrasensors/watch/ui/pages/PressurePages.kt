@@ -145,8 +145,18 @@ fun RainPage(g: AppGraph, openSettings: () -> Unit) {
     when (val t = h.trend) {
         is TrendResult.Unavailable -> RoundPage {
             PageLabel(label, Palette.Rain)
-            Secondary("Coletando dados", Palette.Primary, 17.sp, top = 12.dp)
-            Secondary("faltam ${Format.remaining(t.remainingMillis)}", top = 6.dp)
+            val recent = h.samples.filter { it.timeMillis >= h.now - RainTrend.WINDOW_MS }
+            val last = h.samples.lastOrNull()
+            if (last == null) {
+                Secondary("Nenhuma amostra gravada", Palette.Primary, 16.sp, top = 12.dp)
+                Secondary("Veja Ajustes › Diagnóstico", top = 6.dp)
+            } else {
+                Secondary("Coletando dados", Palette.Primary, 17.sp, top = 12.dp)
+                Secondary("faltam ${Format.remaining(t.remainingMillis)}", top = 6.dp)
+                val hm = java.time.Instant.ofEpochMilli(last.timeMillis).atZone(java.time.ZoneId.systemDefault())
+                    .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+                Secondary("${recent.size} amostras · última às $hm", Palette.Support, 12.sp)
+            }
             if (!running) Secondary(net.extrasensors.watch.ui.components.serviceStoppedText(context), Palette.Support, top = 8.dp)
         }
         is TrendResult.Available -> {

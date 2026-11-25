@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -109,6 +110,14 @@ class SettingsRepository(private val context: Context) {
     suspend fun setAge(v: Int) = context.settingsStore.edit { it[K.age] = v }
 }
 
+data class Diagnostics(
+    val serviceStartAt: Long?,
+    val alarmAt: Long?,
+    val sampleAt: Long?,
+    val sampleError: String?,
+    val syncPushAt: Long?,
+)
+
 /** Estado interno persistido: exposição solar, alerta de chuva, último dB medido. */
 class StateRepository(private val context: Context) {
     private object K {
@@ -122,6 +131,10 @@ class StateRepository(private val context: Context) {
         val sunDoseAlertDay = longPreferencesKey("sun_dose_alert_day")
         val sunUvAlertAt = longPreferencesKey("sun_uv_alert_at")
         val lastSyncPush = longPreferencesKey("last_sync_push")
+        val diagAlarmAt = longPreferencesKey("diag_alarm_at")
+        val diagSampleAt = longPreferencesKey("diag_sample_at")
+        val diagSampleError = stringPreferencesKey("diag_sample_error")
+        val diagServiceStartAt = longPreferencesKey("diag_service_start_at")
         val lastUvRequest = longPreferencesKey("last_uv_request")
         val rainArmed = booleanPreferencesKey("rain_armed")
         val rainLast = longPreferencesKey("rain_last_alert")
@@ -184,6 +197,24 @@ class StateRepository(private val context: Context) {
     suspend fun setLastDb(db: Double, at: Long) = context.stateStore.edit {
         it[K.lastDb] = db
         it[K.lastDbAt] = at
+    }
+
+    /** Diagnóstico do serviço, mostrado em Ajustes › Diagnóstico. */
+    val diagnostics: Flow<Diagnostics> = context.stateStore.data.map { p ->
+        Diagnostics(
+            serviceStartAt = p[K.diagServiceStartAt],
+            alarmAt = p[K.diagAlarmAt],
+            sampleAt = p[K.diagSampleAt],
+            sampleError = p[K.diagSampleError],
+            syncPushAt = p[K.lastSyncPush],
+        )
+    }
+
+    suspend fun setDiagServiceStart(t: Long) = context.stateStore.edit { it[K.diagServiceStartAt] = t }
+    suspend fun setDiagAlarm(t: Long) = context.stateStore.edit { it[K.diagAlarmAt] = t }
+    suspend fun setDiagSample(t: Long?, error: String?) = context.stateStore.edit {
+        if (t != null) it[K.diagSampleAt] = t
+        if (error != null) it[K.diagSampleError] = error else it.remove(K.diagSampleError)
     }
 
     suspend fun lastSyncPush(): Long = context.stateStore.data.first()[K.lastSyncPush] ?: 0L

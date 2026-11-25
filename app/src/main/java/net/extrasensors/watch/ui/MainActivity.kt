@@ -73,6 +73,7 @@ private object Routes {
     const val GENDER = "gender"
     const val ABOUT = "about"
     const val SKIN_TYPE = "skin_type"
+    const val DIAGNOSTICS = "diagnostics"
     fun edit(s: NumericSetting) = "edit/${s.name}"
 }
 
@@ -106,6 +107,7 @@ private fun App(g: AppGraph, initialPage: Int, pageRequests: MutableSharedFlow<I
                 onCalibrate = { nav.navigate(Routes.CALIBRATE) },
                 onGender = { nav.navigate(Routes.GENDER) },
                 onSkinType = { nav.navigate(Routes.SKIN_TYPE) },
+                onDiagnostics = { nav.navigate(Routes.DIAGNOSTICS) },
                 onAbout = { nav.navigate(Routes.ABOUT) },
             )
         }
@@ -118,6 +120,7 @@ private fun App(g: AppGraph, initialPage: Int, pageRequests: MutableSharedFlow<I
         composable(Routes.GENDER) { GenderScreen(g) { nav.popBackStack() } }
         composable(Routes.ABOUT) { AboutScreen() }
         composable(Routes.SKIN_TYPE) { SkinTypeScreen(g) { nav.popBackStack() } }
+        composable(Routes.DIAGNOSTICS) { DiagnosticsScreen(g) }
     }
 }
 
