@@ -72,6 +72,7 @@ private object Routes {
     const val CALIBRATE = "calibrate"
     const val GENDER = "gender"
     const val ABOUT = "about"
+    const val SKIN_TYPE = "skin_type"
     fun edit(s: NumericSetting) = "edit/${s.name}"
 }
 
@@ -87,6 +88,11 @@ private fun App(g: AppGraph, initialPage: Int, pageRequests: MutableSharedFlow<I
     LaunchedEffect(Unit) {
         if (Permissions.notificationsGranted(context)) ServiceController.startIfEnabled(context)
         else notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        // Ao abrir o app: envia dados pendentes ao celular e pede UV se a previsão estiver velha.
+        g.appScope.launch {
+            net.extrasensors.watch.sync.WatchSync.push(context, force = true)
+            net.extrasensors.watch.sync.WatchSync.requestUvIfStale(context)
+        }
     }
 
     SwipeDismissableNavHost(navController = nav, startDestination = Routes.PAGER) {
@@ -99,6 +105,7 @@ private fun App(g: AppGraph, initialPage: Int, pageRequests: MutableSharedFlow<I
                 onEdit = { nav.navigate(Routes.edit(it)) },
                 onCalibrate = { nav.navigate(Routes.CALIBRATE) },
                 onGender = { nav.navigate(Routes.GENDER) },
+                onSkinType = { nav.navigate(Routes.SKIN_TYPE) },
                 onAbout = { nav.navigate(Routes.ABOUT) },
             )
         }
@@ -110,6 +117,7 @@ private fun App(g: AppGraph, initialPage: Int, pageRequests: MutableSharedFlow<I
         composable(Routes.CALIBRATE) { CalibrateScreen(g) { nav.popBackStack() } }
         composable(Routes.GENDER) { GenderScreen(g) { nav.popBackStack() } }
         composable(Routes.ABOUT) { AboutScreen() }
+        composable(Routes.SKIN_TYPE) { SkinTypeScreen(g) { nav.popBackStack() } }
     }
 }
 

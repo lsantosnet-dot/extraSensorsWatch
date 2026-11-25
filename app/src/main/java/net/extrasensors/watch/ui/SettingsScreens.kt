@@ -136,6 +136,7 @@ fun SettingsListScreen(
     onEdit: (NumericSetting) -> Unit,
     onCalibrate: () -> Unit,
     onGender: () -> Unit,
+    onSkinType: () -> Unit,
     onAbout: () -> Unit,
 ) {
     val s by g.settings.settings.collectAsStateWithLifecycle(AppSettings())
@@ -160,6 +161,10 @@ fun SettingsListScreen(
             item {
                 Toggle("Alerta de protetor", s.sunAlert) { v -> scope.launch { g.settings.setSunAlert(v) } }
             }
+            item {
+                Toggle("Alertas de UV (dose e UV 8+)", s.uvAlerts) { v -> scope.launch { g.settings.setUvAlerts(v) } }
+            }
+            item { SettingButton("Tipo de pele", "${s.skinType.label}: ${s.skinType.description}", onSkinType) }
 
             item { ListHeader { Text("Som", color = Palette.Sound) } }
             item { SettingButton(NumericSetting.DB_OFFSET.title, NumericSetting.DB_OFFSET.format(s.dbOffset)) { onEdit(NumericSetting.DB_OFFSET) } }
@@ -357,10 +362,23 @@ fun GenderScreen(g: AppGraph, done: () -> Unit) {
 }
 
 @Composable
+fun SkinTypeScreen(g: AppGraph, done: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    RoundPage {
+        PageLabel("Tipo de pele", Palette.Sun)
+        Secondary("Define a dose de UV que avermelha a pele (MED).", top = 6.dp)
+        net.extrasensors.shared.SkinType.entries.forEach { t ->
+            SecondaryButton("${t.label}: ${t.description}", { scope.launch { g.settings.setSkinType(t); done() } })
+        }
+    }
+}
+
+@Composable
 fun AboutScreen() {
     RoundPage {
         PageLabel("Sobre as medições", Palette.Secondary)
-        AboutItem("Sol", "O sensor mede luz visível, não UV. Dia nublado e manga cobrindo o relógio alteram o resultado.")
+        AboutItem("Sol", "O sensor mede luz visível, não UV: ele detecta quando você está no sol. O índice UV vem da previsão buscada pelo app do celular. Dia nublado e manga cobrindo o relógio alteram o resultado.")
+        AboutItem("Alertas de sol", "Reaplicar a cada 2 h de exposição com UV 3 ou mais (AAD/FDA; OMS: proteção a partir do UV 3). Aviso de dose: sem protetor hoje e metade da dose que avermelha sua pele. UV 8 ou mais: procure sombra (OMS). São estimativas, não garantia.")
         AboutItem("Chuva", "Regra prática baseada na pressão do ar. Não é previsão do tempo.")
         AboutItem("Som", "Não é um SPL certificado. Calibre o offset comparando com um medidor no celular.")
         AboutItem("Pele", "Temperatura da pele do pulso. Não é temperatura corporal.")

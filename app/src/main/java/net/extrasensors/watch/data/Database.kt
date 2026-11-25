@@ -1,6 +1,7 @@
 package net.extrasensors.watch.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -11,6 +12,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "pressure_sample", indices = [Index("timeMillis")])
@@ -24,6 +27,24 @@ data class PressureSampleEntity(
 data class SunDayEntity(
     @PrimaryKey val epochDay: Long,
     val totalMs: Long,
+    @ColumnInfo(defaultValue = "0") val updatedAt: Long = 0,
+)
+
+/** Bloco de 5 min de exposição solar (para os gráficos do celular). */
+@Entity(tableName = "sun_bucket")
+data class SunBucketEntity(
+    @PrimaryKey val bucketStart: Long,
+    val exposedMs: Long,
+    val doseSed: Double,
+    val maxUv: Double?,
+    val updatedAt: Long,
+)
+
+/** Previsão horária do índice UV recebida do celular. */
+@Entity(tableName = "uv_hour")
+data class UvHourEntity(
+    @PrimaryKey val hourStart: Long,
+    val uvi: Double,
 )
 
 @Entity(tableName = "sun_application")
@@ -98,6 +119,27 @@ interface SunDao {
     @Query("DELETE FROM sun_day WHERE epochDay < :beforeDay")
     suspend fun deleteDaysBefore(beforeDay: Long)
 
+    @Query("SELECT * FROM sun_bucket WHERE bucketStart = :start")
+    suspend fun bucket(start: Long): SunBucketEntity?
+
+    @Upsert
+    suspend fun upsertBucket(b: SunBucketEntity)
+
+    @Query("DELETE FROM sun_bucket WHERE bucketStart < :before")
+    suspend fun deleteBucketsBefore(before: Long)
+
+    @Query("SELECT * FROM sun_bucket WHERE updatedAt > :after ORDER BY updatedAt LIMIT :limit")
+    suspend fun bucketsUpdatedAfter(after: Long, limit: Int): List<SunBucketEntity>
+
+    @Query("SELECT * FROM sun_day WHERE updatedAt > :after ORDER BY updatedAt LIMIT :limit")
+    suspend fun daysUpdatedAfter(after: Long, limit: Int): List<SunDayEntity>
+
+    @Query("SELECT * FROM sun_application WHERE timeMillis > :after ORDER BY timeMillis LIMIT :limit")
+    suspend fun applicationsAfter(after: Long, limit: Int): List<SunApplicationEntity>
+
+    @Query("SELECT * FROM sun_bucket WHERE bucketStart >= :since ORDER BY bucketStart")
+    suspend fun bucketsSince(since: Long): List<SunBucketEntity>
+
     @Query("DELETE FROM sun_application WHERE timeMillis < :before")
     suspend fun deleteApplicationsBefore(before: Long)
 }
@@ -142,6 +184,24 @@ interface SkinTempDao {
 
     @Query("DELETE FROM skin_temp_reading WHERE timeMillis < :before")
     suspend fun deleteBefore(before: Long)
+
+    @Query("SELECT * FROM skin_temp_reading WHERE timeMillis > :after ORDER BY timeMillis LIMIT :limit")
+    suspend fun after(after: Long, limit: Int): List<SkinTempEntity>
+}
+
+@Dao
+interface UvDao {
+    @Upsert
+    suspend fun upsert(hours: List<UvHourEntity>)
+
+    @Query("SELECT * FROM uv_hour WHERE hourStart BETWEEN :from AND :to ORDER BY hourStart")
+    suspend fun between(from: Long, to: Long): List<UvHourEntity>
+
+    @Query("SELECT MAX(hourStart) FROM uv_hour")
+    suspend fun lastHour(): Long?
+
+    @Query("DELETE FROM uv_hour WHERE hourStart < :before")
+    suspend fun deleteBefore(before: Long)
 }
 
 @Dao
@@ -162,8 +222,10 @@ interface SweatDao {
         ClimbPointEntity::class,
         SkinTempEntity::class,
         SweatResultEntity::class,
+        SunBucketEntity::class,
+        UvHourEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -172,9 +234,28 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun climb(): ClimbDao
     abstract fun skin(): SkinTempDao
     abstract fun sweat(): SweatDao
+    abstract fun uv(): UvDao
 
     companion object {
-        fun create(context: Context): AppDatabase =
-            Room.databaseBuilder(context, AppDatabase::class.java, "sensors.db").build()
+        /** v1 → v2: blocos de sol, previsão de UV e updatedAt nos totais diários. */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sun_bucket` (`bucketStart` INTEGER NOT NULL, `exposedMs` INTEGER NOT NULL, " +
+                        "`doseSed` REAL NOT NULL, `maxUv` REAL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`bucketStart`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `uv_hour` (`hourStart` INTEGER NOT NULL, `uvi` REAL NOT NULL, PRIMARY KEY(`hourStart`))"
+                )
+                db.execSQL("ALTER TABLE `sun_day` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+                // Faz os totais antigos serem enviados ao celular na primeira sincronização.
+                db.execSQL("UPDATE `sun_day` SET `updatedAt` = 1")
+            }
+        }
+
+        fun create(context: Context, name: String = "sensors.db"): AppDatabase =
+            Room.databaseBuilder(context, AppDatabase::class.java, name)
+                .addMigrations(MIGRATION_1_2)
+                .build()
     }
 }

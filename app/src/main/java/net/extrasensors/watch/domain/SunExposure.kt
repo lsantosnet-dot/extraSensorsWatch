@@ -1,10 +1,12 @@
 package net.extrasensors.watch.domain
 
+import net.extrasensors.shared.SkinType
+import net.extrasensors.shared.UvMath
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Estado persistido da exposição solar. Tempos em milissegundos. */
+/** Estado persistido da exposição solar. Tempos em milissegundos, doses em SED. */
 data class SunState(
     val epochDay: Long,
     val todayMs: Long = 0,
@@ -12,28 +14,47 @@ data class SunState(
     val lastTickAt: Long? = null,
     val goalNotified: Boolean = false,
     val lastApplicationAt: Long? = null,
+    val doseTodaySed: Double = 0.0,
+    val doseAlertDay: Long? = null,
+    val lastUvAlertAt: Long? = null,
 )
 
 data class SunConfig(
     val luxThreshold: Float = 10_000f,
     val goalMs: Long = 2 * 60 * 60 * 1000L,
     val maxGapMs: Long = 90_000,
+    val skinType: SkinType = SkinType.II,
+    /** Fração da MED que dispara o alerta "Aplique protetor". */
+    val doseAlertFraction: Double = 0.5,
+    val uvAlertIntervalMs: Long = 2 * 60 * 60 * 1000L,
 )
 
 data class ClosedDay(val epochDay: Long, val totalMs: Long)
 
 data class SunTickResult(
     val state: SunState,
+    /** 2 h de exposição com UV ≥ 3 (ou UV desconhecido) desde o protetor. */
     val goalReached: Boolean,
     val closedDay: ClosedDay?,
     val counted: Boolean,
+    /** Tempo exposto contado neste tick (para os blocos de 5 min). */
+    val exposedMs: Long = 0,
+    /** Dose recebida neste tick. */
+    val doseSed: Double = 0.0,
+    /** Sem protetor hoje e dose do dia ≥ fração da MED. */
+    val doseAlert: Boolean = false,
+    /** Exposto com UV ≥ 8. */
+    val uvAlert: Boolean = false,
 )
 
 /**
- * Acumula o tempo sob luz forte. É chamado por um tick periódico (~30 s) com o último lux
- * recebido: o sensor de luz é "on-change" e pode ficar minutos sem evento sob sol constante,
- * então o silêncio do sensor não é tratado como falta de dado. Intervalos maiores que
+ * Acumula o tempo sob luz forte e a dose de UV. É chamado por um tick periódico (~30 s) com o
+ * último lux recebido: o sensor de luz é "on-change" e pode ficar minutos sem evento sob sol
+ * constante, então o silêncio do sensor não é tratado como falta de dado. Intervalos maiores que
  * [SunConfig.maxGapMs] indicam serviço parado ou CPU dormindo e são descartados.
+ *
+ * O índice UV vem da previsão do celular. O relógio mede luz visível, não UV: a luz diz QUANDO
+ * você está no sol; o índice UV diz QUANTO o sol queima naquela hora.
  */
 object SunExposure {
 
@@ -56,7 +77,14 @@ object SunExposure {
         todayMs = 0,
         sinceApplicationMs = 0,
         goalNotified = false,
+        doseTodaySed = 0.0,
     )
+
+    fun appliedToday(state: SunState, now: Long, zone: ZoneId): Boolean =
+        state.lastApplicationAt?.let { dayOf(it, zone) == dayOf(now, zone) } ?: false
+
+    /** O tempo conta para "reaplicar" só com UV ≥ 3 (OMS) ou quando o UV é desconhecido. */
+    private fun countsForReapply(uvi: Double?) = uvi == null || uvi >= UvMath.PROTECTION_UVI
 
     fun onTick(
         state: SunState,
@@ -65,10 +93,19 @@ object SunExposure {
         onWrist: Boolean,
         config: SunConfig,
         zone: ZoneId,
+        uvi: Double? = null,
     ): SunTickResult {
         val last = state.lastTickAt
         val dt = if (last == null) -1 else now - last
         val counting = dt in 1..config.maxGapMs && onWrist && lux != null && lux > config.luxThreshold
+        val reapply = countsForReapply(uvi)
+        val dose = if (counting && uvi != null) UvMath.doseSed(uvi, dt) else 0.0
+
+        fun SunState.add(ms: Long, d: Double) = copy(
+            todayMs = todayMs + ms,
+            sinceApplicationMs = sinceApplicationMs + if (reapply) ms else 0,
+            doseTodaySed = doseTodaySed + d,
+        )
 
         var s = state
         var closed: ClosedDay? = null
@@ -84,19 +121,45 @@ object SunExposure {
             s = newDay(s, today)
             if (counting) {
                 val after = dt - beforeMidnight
-                s = s.copy(todayMs = after, sinceApplicationMs = after)
+                s = s.add(after, dose * after / dt)
             }
         } else if (counting) {
-            s = s.copy(todayMs = s.todayMs + dt, sinceApplicationMs = s.sinceApplicationMs + dt)
+            s = s.add(dt, dose)
         }
 
         s = s.copy(lastTickAt = now)
+
         var goal = false
         if (!s.goalNotified && s.sinceApplicationMs >= config.goalMs) {
             goal = true
             s = s.copy(goalNotified = true)
         }
-        return SunTickResult(s, goal, closed, counting)
+
+        var doseAlert = false
+        val limit = config.skinType.medSed * config.doseAlertFraction
+        if (!appliedToday(s, now, zone) && s.doseTodaySed >= limit && s.doseAlertDay != today) {
+            doseAlert = true
+            s = s.copy(doseAlertDay = today)
+        }
+
+        var uvAlert = false
+        if (counting && uvi != null && uvi >= UvMath.VERY_HIGH_UVI &&
+            (s.lastUvAlertAt == null || now - s.lastUvAlertAt!! >= config.uvAlertIntervalMs)
+        ) {
+            uvAlert = true
+            s = s.copy(lastUvAlertAt = now)
+        }
+
+        return SunTickResult(
+            state = s,
+            goalReached = goal,
+            closedDay = closed,
+            counted = counting,
+            exposedMs = if (counting) dt else 0,
+            doseSed = dose,
+            doseAlert = doseAlert,
+            uvAlert = uvAlert,
+        )
     }
 
     fun applySunscreen(state: SunState, now: Long, zone: ZoneId): SunState =

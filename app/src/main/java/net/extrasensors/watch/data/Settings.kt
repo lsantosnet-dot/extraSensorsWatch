@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import net.extrasensors.shared.SkinType
 import net.extrasensors.watch.domain.Barometry
 import net.extrasensors.watch.domain.RainAlertState
 import net.extrasensors.watch.domain.SunConfig
@@ -35,13 +36,15 @@ data class AppSettings(
     val sunAlert: Boolean = true,
     val dbOffset: Double = 90.0,
     val background: Boolean = true,
+    val skinType: SkinType = SkinType.II,
+    val uvAlerts: Boolean = true,
     val heightCm: Float? = null,
     val weightKg: Float? = null,
     val gender: Int? = null,
     val age: Int? = null,
 ) {
     val thresholds get() = TrendThresholds(rapidFall, band)
-    val sunConfig get() = SunConfig(luxThreshold = luxThreshold, goalMs = sunGoalMin * 60_000L)
+    val sunConfig get() = SunConfig(luxThreshold = luxThreshold, goalMs = sunGoalMin * 60_000L, skinType = skinType)
     val profile: UserProfile?
         get() = if (heightCm != null && weightKg != null && gender != null && age != null)
             UserProfile(heightCm, weightKg, gender, age) else null
@@ -58,6 +61,8 @@ class SettingsRepository(private val context: Context) {
         val sunAlert = booleanPreferencesKey("sun_alert")
         val dbOffset = doublePreferencesKey("db_offset")
         val background = booleanPreferencesKey("background")
+        val skinType = intPreferencesKey("skin_type")
+        val uvAlerts = booleanPreferencesKey("uv_alerts")
         val height = floatPreferencesKey("height_cm")
         val weight = floatPreferencesKey("weight_kg")
         val gender = intPreferencesKey("gender")
@@ -76,6 +81,8 @@ class SettingsRepository(private val context: Context) {
             sunAlert = p[K.sunAlert] ?: d.sunAlert,
             dbOffset = p[K.dbOffset] ?: d.dbOffset,
             background = p[K.background] ?: d.background,
+            skinType = p[K.skinType]?.let { SkinType.entries.getOrNull(it) } ?: d.skinType,
+            uvAlerts = p[K.uvAlerts] ?: d.uvAlerts,
             heightCm = p[K.height],
             weightKg = p[K.weight],
             gender = p[K.gender],
@@ -94,6 +101,8 @@ class SettingsRepository(private val context: Context) {
     suspend fun setSunAlert(v: Boolean) = context.settingsStore.edit { it[K.sunAlert] = v }
     suspend fun setDbOffset(v: Double) = context.settingsStore.edit { it[K.dbOffset] = v }
     suspend fun setBackground(v: Boolean) = context.settingsStore.edit { it[K.background] = v }
+    suspend fun setSkinType(v: SkinType) = context.settingsStore.edit { it[K.skinType] = v.ordinal }
+    suspend fun setUvAlerts(v: Boolean) = context.settingsStore.edit { it[K.uvAlerts] = v }
     suspend fun setHeight(v: Float) = context.settingsStore.edit { it[K.height] = v }
     suspend fun setWeight(v: Float) = context.settingsStore.edit { it[K.weight] = v }
     suspend fun setGender(v: Int) = context.settingsStore.edit { it[K.gender] = v }
@@ -109,6 +118,11 @@ class StateRepository(private val context: Context) {
         val sunLastTick = longPreferencesKey("sun_last_tick")
         val sunGoalNotified = booleanPreferencesKey("sun_goal_notified")
         val sunLastApp = longPreferencesKey("sun_last_application")
+        val sunDose = doublePreferencesKey("sun_dose_today")
+        val sunDoseAlertDay = longPreferencesKey("sun_dose_alert_day")
+        val sunUvAlertAt = longPreferencesKey("sun_uv_alert_at")
+        val lastSyncPush = longPreferencesKey("last_sync_push")
+        val lastUvRequest = longPreferencesKey("last_uv_request")
         val rainArmed = booleanPreferencesKey("rain_armed")
         val rainLast = longPreferencesKey("rain_last_alert")
         val lastDb = doublePreferencesKey("last_db")
@@ -125,6 +139,9 @@ class StateRepository(private val context: Context) {
             lastTickAt = p[K.sunLastTick],
             goalNotified = p[K.sunGoalNotified] ?: false,
             lastApplicationAt = p[K.sunLastApp],
+            doseTodaySed = p[K.sunDose] ?: 0.0,
+            doseAlertDay = p[K.sunDoseAlertDay],
+            lastUvAlertAt = p[K.sunUvAlertAt],
         )
     }
 
@@ -141,6 +158,9 @@ class StateRepository(private val context: Context) {
             if (s.lastTickAt != null) p[K.sunLastTick] = s.lastTickAt else p.remove(K.sunLastTick)
             p[K.sunGoalNotified] = s.goalNotified
             if (s.lastApplicationAt != null) p[K.sunLastApp] = s.lastApplicationAt else p.remove(K.sunLastApp)
+            p[K.sunDose] = s.doseTodaySed
+            if (s.doseAlertDay != null) p[K.sunDoseAlertDay] = s.doseAlertDay else p.remove(K.sunDoseAlertDay)
+            if (s.lastUvAlertAt != null) p[K.sunUvAlertAt] = s.lastUvAlertAt else p.remove(K.sunUvAlertAt)
             out = s
         }
         return out!!
@@ -165,6 +185,11 @@ class StateRepository(private val context: Context) {
         it[K.lastDb] = db
         it[K.lastDbAt] = at
     }
+
+    suspend fun lastSyncPush(): Long = context.stateStore.data.first()[K.lastSyncPush] ?: 0L
+    suspend fun setLastSyncPush(t: Long) = context.stateStore.edit { it[K.lastSyncPush] = t }
+    suspend fun lastUvRequest(): Long = context.stateStore.data.first()[K.lastUvRequest] ?: 0L
+    suspend fun setLastUvRequest(t: Long) = context.stateStore.edit { it[K.lastUvRequest] = t }
 
     val activeClimbSession: Flow<Long?> = context.stateStore.data.map { it[K.activeClimb] }
 

@@ -1,18 +1,35 @@
-# Sensores: app para Galaxy Watch 9
+# Sensores: app para Galaxy Watch 9 e celular
 
-App Wear OS nativo, de uso pessoal, que mostra dados de sensores que o relógio não exibe direto: barômetro e altitude, tendência de chuva, subida acumulada, luz ambiente, exposição solar, decibelímetro, temperatura da pele e perda de suor.
+Dois apps de uso pessoal no mesmo repositório:
 
-- Português do Brasil, tema escuro, sem anúncios, sem rede (o app não declara `INTERNET`).
-- Somente dados reais: sem valores de exemplo, simulação ou modo demo. Sem dado, a tela diz o motivo.
-- Especificação completa: [`docs/SPEC.md`](docs/SPEC.md).
+| Pasta | App | O que faz |
+|---|---|---|
+| `app/` | **Relógio** (Wear OS) | Barômetro e altitude, tendência de chuva, subida acumulada, luz ambiente, exposição solar com dose de UV, decibelímetro, temperatura da pele e perda de suor |
+| `app-celular/` | **Celular** (Android) | Recebe do relógio a exposição ao sol e a temperatura da pele, busca o índice UV e mostra gráficos por período |
+| `shared/` | código comum | Formato da sincronização e matemática de UV, usados pelos dois apps |
 
-## Instalar no relógio (pelo celular, com Termux)
+- Português do Brasil, sem anúncios. Somente dados reais: sem valores de exemplo, simulação ou modo demo.
+- O **relógio não acessa a internet**. Ele troca dados só com o celular, por Bluetooth (Wearable Data Layer).
+- O **celular** acessa a internet só para buscar a previsão do índice UV (Open-Meteo), com a localização arredondada a ~1 km.
+- Especificações: [`docs/SPEC.md`](docs/SPEC.md) (relógio) e [`docs/SPEC-celular.md`](docs/SPEC-celular.md) (celular e UV).
+
+## Instalar
+
+### Celular
+
+1. Baixe o `sensores-celular.apk` no celular.
+2. Toque no arquivo e permita "instalar apps desconhecidos" para o app usado para abrir (Arquivos ou o app do Claude).
+3. Abra o app **Sensores** e permita a **localização aproximada**: ela é usada só para a previsão de UV.
+
+O app do celular e o do relógio usam o mesmo nome de pacote e a mesma assinatura, que é o que o Data Layer exige para eles se enxergarem.
+
+### Relógio (pelo celular, com Termux)
 
 1. Baixe o `.apk` no celular. Ele fica em Downloads.
 2. No Termux, na primeira vez, rode `termux-setup-storage` para o Termux enxergar a pasta Downloads.
 3. Conecte o ADB ao relógio por Wi-Fi, como você já faz, e instale:
    ```
-   adb install -r ~/storage/downloads/sensores.apk
+   adb install -r ~/storage/downloads/sensores-relogio.apk
    ```
    O `-r` atualiza o app mantendo os dados. Todas as compilações são assinadas com a mesma chave do projeto (`keystore/project-debug.jks`), então atualizar nunca exige desinstalar.
 
@@ -33,7 +50,7 @@ Pré-requisitos: JDK 17 ou mais novo e Android SDK com a plataforma `android-37.
 2. Crie `local.properties` com `sdk.dir=/caminho/do/android-sdk`.
 3. Rode:
    ```
-   ./gradlew assembleRelease   # APK em app/build/outputs/apk/release/
+   ./gradlew assembleRelease   # APKs em app/build/outputs/apk/release/ e app-celular/build/outputs/apk/release/
    ./gradlew test              # testes unitários e renderização das telas
    ./gradlew lintDebug
    ```
@@ -56,6 +73,24 @@ O pager horizontal tem 10 páginas. A coroa ou o bezel giratório troca de pági
 | 9 | Ajustes | atalho para a lista de ajustes e para "Sobre as medições" |
 
 Também há uma **complicação "Sol"** para o mostrador, com o tempo desde o protetor contra a meta.
+
+## Sincronização e alertas de UV (etapa 2)
+
+- **Automática:** o relógio envia ao celular, a cada 15 min se houver dado novo, à meia-noite e ao abrir o app, os blocos de 5 min de sol, os totais diários, as aplicações de protetor e as leituras de pele.
+  - O Data Layer guarda o envio e entrega quando o Bluetooth reconecta.
+  - O celular grava os dados e devolve um recibo; o relógio só reenvia o que ainda não foi confirmado.
+- **Índice UV:** o celular busca a previsão horária a cada 1 h (e ao abrir o app) e envia ao relógio. Se a previsão no relógio ficar velha, o relógio pede uma nova.
+- **No relógio:** a tela Sol mostra "UV agora" e "Dose hoje". Os alertas são:
+
+| Alerta | Regra | Base |
+|---|---|---|
+| Reaplicar protetor | 2 h de exposição com UV ≥ 3 (ou sem UV conhecido) | AAD/FDA: reaplicar a cada 2 h; OMS: proteção a partir do UV 3 |
+| Aplique protetor | Sem protetor registrado hoje e dose do dia ≥ 50% da MED do seu tipo de pele (tipo II: 2,5 SED) | Dose eritematosa mínima por tipo de pele |
+| UV muito alto | Exposto com UV ≥ 8, no máximo a cada 2 h | OMS: evitar o sol do meio do dia com UV 8+ |
+
+- **Dose:** índice UV 1 = 25 mW/m² = 0,9 SED por hora. A dose só soma quando o relógio detecta sol (luz forte e relógio no pulso).
+- **Tipo de pele:** em Ajustes › Tipo de pele (padrão: tipo II). O app do celular mostra a referência do tipo II.
+- **No celular:** abas **Sol** e **Pele**; filtros Hoje, 7, 30 e 90 dias, 1 ano e período personalizado. Tocar numa barra ou ponto mostra os valores. "Exportar CSV" compartilha o histórico completo em 5 arquivos.
 
 ## Decisões técnicas
 
@@ -128,16 +163,21 @@ O app só pede as permissões que existem no sistema do relógio. Se o SDK da Sa
 - A tendência de chuva é uma regra prática, não uma previsão.
 - O decibelímetro não é um SPL certificado.
 - A temperatura da pele não é a temperatura corporal.
+- O índice UV é previsão do tempo para a sua região, não medição no seu pulso. Sombra, nuvens passageiras e altitude mudam a dose real.
 - O app não foi executado num relógio físico durante o desenvolvimento, porque o ambiente não tinha emulador nem relógio. A lógica tem testes unitários e as telas foram renderizadas em testes; o comportamento dos sensores e do SDK da Samsung só se confirma no relógio.
 
 ## Estrutura
 
 ```
+shared/src/main/kotlin/…/shared/   formato de sincronização, índice UV, tipos de pele (testado)
+app-celular/src/main/java/net/extrasensors/phone/
+  data/  stats/  sync/  uv/  ui/   banco, agregação por período, Data Layer, Open-Meteo, telas e gráficos
 app/src/main/java/net/extrasensors/watch/
   domain/        algoritmos puros (testados): tendência, subida, sol, som, pele, formatação
   data/          Room (históricos) e DataStore (configurações e estado)
   sensor/        sensores Android, microfone e Samsung Health Sensor SDK
   service/       SensorService, notificações, alarme, boot, ação "Apliquei protetor"
+  sync/          envio ao celular e recebimento do índice UV
   complication/  complicação "Sol"
   ui/            MainActivity, pager, telas, ajustes e componentes
 app/src/test/    testes unitários e renderização das telas

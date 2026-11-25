@@ -30,7 +30,10 @@ import net.extrasensors.watch.data.ClimbPointEntity
 import net.extrasensors.watch.data.ClimbSessionEntity
 import net.extrasensors.watch.data.PressureSampleEntity
 import net.extrasensors.watch.data.SkinTempEntity
+import net.extrasensors.watch.data.SunBucketEntity
 import net.extrasensors.watch.data.SunDayEntity
+import net.extrasensors.watch.domain.SunTickResult
+import net.extrasensors.watch.sync.WatchSync
 import net.extrasensors.watch.data.SweatResultEntity
 import net.extrasensors.watch.domain.Barometry
 import net.extrasensors.watch.domain.ClimbAccumulator
@@ -89,6 +92,7 @@ class SensorService : LifecycleService() {
         private const val PRESSURE_PERIOD_MS = 5 * 60_000L
         private const val PRESSURE_KEEP_MS = 48 * 60 * 60_000L
         private const val SKIN_PERIOD_MS = 30 * 60_000L
+        private const val BUCKET_MS = 5 * 60_000L
         // Renovado durante a sessão; o timeout só age se o app travar.
         private const val SESSION_LOCK_MS = 30 * 60_000L
 
@@ -226,21 +230,41 @@ class SensorService : LifecycleService() {
         if (!settings.background) return@withLock
         val now = System.currentTimeMillis()
         val cfg = settings.sunConfig
-        var goal = false
-        var closed: net.extrasensors.watch.domain.ClosedDay? = null
+        val uvi = WatchSync.currentUv(g, now)
+        var result: SunTickResult? = null
         val s = g.state.updateSun({ SunExposure.initial(now, zone) }) { st ->
-            val r = SunExposure.onTick(st, now, lastLux, onWrist, cfg, zone)
-            goal = r.goalReached
-            closed = r.closedDay
+            val r = SunExposure.onTick(st, now, lastLux, onWrist, cfg, zone, uvi)
+            result = r
             r.state
         }
-        closed?.let {
-            g.db.sun().upsertDay(SunDayEntity(it.epochDay, it.totalMs))
-            g.db.sun().deleteDaysBefore(s.epochDay - 365)
-            g.db.sun().deleteApplicationsBefore(now - 30L * 24 * 3600_000)
+        val r = result ?: return@withLock
+        val sun = g.db.sun()
+        r.closedDay?.let {
+            sun.upsertDay(SunDayEntity(it.epochDay, it.totalMs, updatedAt = now))
+            sun.deleteDaysBefore(s.epochDay - 365)
+            sun.deleteBucketsBefore(now - 365L * 24 * 3600_000)
+            sun.deleteApplicationsBefore(now - 365L * 24 * 3600_000)
         }
-        g.db.sun().upsertDay(SunDayEntity(s.epochDay, s.todayMs))
-        if (goal && settings.sunAlert) Notifications.sunAlert(this)
+        sun.upsertDay(SunDayEntity(s.epochDay, s.todayMs, updatedAt = now))
+        if (r.exposedMs > 0) {
+            // Bloco de 5 min para os gráficos do celular.
+            val start = now - now % BUCKET_MS
+            val b = sun.bucket(start)
+            val maxUv = listOfNotNull(b?.maxUv, uvi).maxOrNull()
+            sun.upsertBucket(
+                SunBucketEntity(
+                    bucketStart = start,
+                    exposedMs = (b?.exposedMs ?: 0) + r.exposedMs,
+                    doseSed = (b?.doseSed ?: 0.0) + r.doseSed,
+                    maxUv = maxUv,
+                    updatedAt = now,
+                )
+            )
+        }
+        if (r.goalReached && settings.sunAlert) Notifications.sunAlert(this)
+        if (r.doseAlert && settings.uvAlerts) Notifications.doseAlert(this, s.doseTodaySed, cfg.skinType.medSed)
+        if (r.uvAlert && settings.uvAlerts && uvi != null) Notifications.uvAlert(this, uvi)
+        if (r.closedDay != null) lifecycleScope.launch { WatchSync.push(this@SensorService, force = true) }
         refreshNotification(s.sinceApplicationMs)
     }
 
@@ -295,6 +319,8 @@ class SensorService : LifecycleService() {
                     samplePressure()
                     tick()
                     periodicSkin()
+                    WatchSync.requestUvIfStale(this@SensorService)
+                    WatchSync.push(this@SensorService)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "Falha no alarme", t)

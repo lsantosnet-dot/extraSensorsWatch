@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 }
 rootProject.name = "ExtraSensorsWatch"
 include(":app")
+include(":app-celular")
+include(":shared")

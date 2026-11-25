@@ -19,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import net.extrasensors.watch.AppGraph
@@ -108,8 +109,9 @@ fun LightPage(g: AppGraph) {
 // ---------------- Sol (exposição solar) ----------------
 
 class SunViewModel(private val g: AppGraph) : ViewModel() {
-    val state = combine(g.state.sun, g.settings.settings, g.live.serviceRunning, g.live.onWrist) { s, set, running, wrist ->
-        SunUi(s, set, running, wrist)
+    private val uv = tickerFlow(60_000).map { net.extrasensors.watch.sync.WatchSync.currentUv(g, it) }
+    val state = combine(g.state.sun, g.settings.settings, g.live.serviceRunning, g.live.onWrist, uv) { s, set, running, wrist, uvi ->
+        SunUi(s, set, running, wrist, uvi)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun apply() {
@@ -117,7 +119,7 @@ class SunViewModel(private val g: AppGraph) : ViewModel() {
     }
 }
 
-data class SunUi(val sun: SunState?, val settings: AppSettings, val running: Boolean, val onWrist: Boolean?)
+data class SunUi(val sun: SunState?, val settings: AppSettings, val running: Boolean, val onWrist: Boolean?, val uvi: Double?)
 
 @Composable
 fun SunPage(g: AppGraph, openSettings: () -> Unit) {
@@ -150,12 +152,20 @@ fun SunPage(g: AppGraph, openSettings: () -> Unit) {
         val big = Format.duration(since)
         val parts = big.split(" ", limit = 2)
         if (since < 60 * 60_000L) BigValue(parts[0], "min") else BigValue(big, null, sizeFraction = 0.17f)
-        Secondary("desde o protetor", Palette.Support, 14.sp, top = 2.dp)
+        Secondary("desde o protetor, com UV ≥ 3", Palette.Support, 13.sp, top = 2.dp)
         Meter((since.toFloat() / goal).coerceIn(0f, 1f), Palette.Sun, "Progresso até a meta", marker = false)
         MeterLegend("0", "alerta em ${Format.duration(goal)}")
         if (reached) Pill("Hora de reaplicar protetor", Palette.Sun, filled = true)
         ActionButton("Apliquei protetor", Palette.Sun, vm::apply)
-        Secondary("Hoje: ${Format.duration(today)} no total", top = 8.dp)
+        val uvText = u.uvi?.let { "UV agora ${Format.number(it, 1)} · ${net.extrasensors.shared.UvMath.category(it)}" }
+            ?: "Sem índice UV: abra o app no celular"
+        Secondary(uvText, if (u.uvi != null) Palette.Primary else Palette.Secondary, 13.sp, top = 8.dp)
+        val dose = s?.doseTodaySed ?: 0.0
+        val med = u.settings.skinType.medSed
+        if (u.uvi != null || dose > 0) {
+            Secondary("Dose hoje ${Format.number(dose, 1)} SED · ${(dose / med * 100).toInt()}% da sua MED", Palette.Support, 13.sp)
+        }
+        Secondary("Hoje: ${Format.duration(today)} no total", top = 4.dp)
         val last = s?.lastApplicationAt
         if (last != null && isToday(last, now)) Secondary("Protetor aplicado às ${timeOf(last)}")
         val status = when {

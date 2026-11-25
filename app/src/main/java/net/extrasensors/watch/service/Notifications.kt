@@ -30,6 +30,8 @@ object Notifications {
     const val ID_SERVICE = 1
     const val ID_RAIN = 2
     const val ID_SUN = 3
+    const val ID_DOSE = 4
+    const val ID_UV = 5
 
     fun createChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -122,6 +124,42 @@ object Notifications {
         post(context, ID_SUN, n)
     }
 
+    private fun sunNotification(context: Context, id: Int, title: String, text: String, withAction: Boolean) {
+        val b = NotificationCompat.Builder(context, CH_SUN)
+            .setSmallIcon(R.drawable.ic_sun)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openAppIntent(context, 5))
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+        if (withAction) {
+            val applied = PendingIntent.getBroadcast(
+                context, 0,
+                Intent(context, SunscreenReceiver::class.java).setAction(SunscreenReceiver.ACTION_APPLIED),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            b.addAction(R.drawable.ic_sun, "Apliquei protetor", applied)
+        }
+        post(context, id, b.build())
+    }
+
+    /** Sem protetor hoje e metade da dose que avermelha a pele já foi atingida. */
+    fun doseAlert(context: Context, doseSed: Double, medSed: Double) = sunNotification(
+        context, ID_DOSE, "Aplique protetor",
+        "Hoje você já recebeu ${net.extrasensors.watch.domain.Format.number(doseSed, 1)} SED de UV, " +
+            "${(doseSed / medSed * 100).toInt()}% da dose que avermelha sua pele.",
+        withAction = true,
+    )
+
+    /** OMS: com índice UV 8 ou mais, evitar o sol do meio do dia. */
+    fun uvAlert(context: Context, uvi: Double) = sunNotification(
+        context, ID_UV, "Índice UV muito alto (${net.extrasensors.watch.domain.Format.number(uvi, 0)})",
+        "Procure sombra. A OMS recomenda evitar o sol do meio do dia com UV 8 ou mais.",
+        withAction = false,
+    )
+
     fun cancel(context: Context, id: Int) = NotificationManagerCompat.from(context).cancel(id)
 
     fun requestComplicationUpdate(context: Context) {
@@ -140,6 +178,8 @@ object SunActions {
         g.state.updateSun({ SunExposure.initial(now, zone) }) { SunExposure.applySunscreen(it, now, zone) }
         g.db.sun().insertApplication(SunApplicationEntity(timeMillis = now))
         Notifications.cancel(context, Notifications.ID_SUN)
+        Notifications.cancel(context, Notifications.ID_DOSE)
         Notifications.requestComplicationUpdate(context)
+        net.extrasensors.watch.sync.WatchSync.push(context, force = true)
     }
 }

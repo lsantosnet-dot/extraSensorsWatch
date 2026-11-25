@@ -114,4 +114,83 @@ class SunExposureTest {
         assertEquals(0L, n.todayMs)
         assertNull(SunExposure.onTick(n, start + 24 * 3600_000L, 50_000f, true, cfg, zone).closedDay)
     }
+
+    // ---------------- UV (etapa 2) ----------------
+
+    @Test
+    fun `com UV abaixo de 3 o tempo nao conta para reaplicar mas conta no total`() {
+        var s = begin()
+        repeat(120) { i -> s = SunExposure.onTick(s, start + (i + 1) * tick, 50_000f, true, cfg, zone, uvi = 1.5).state }
+        assertEquals(60 * 60_000L, s.todayMs)
+        assertEquals(0L, s.sinceApplicationMs)
+        assertEquals(1.5 * 0.9, s.doseTodaySed, 1e-9)
+    }
+
+    @Test
+    fun `dose de UV 10 por 1 h e 9 SED`() {
+        var s = begin()
+        var dose = 0.0
+        repeat(120) { i ->
+            val r = SunExposure.onTick(s, start + (i + 1) * tick, 50_000f, true, cfg, zone, uvi = 10.0)
+            dose += r.doseSed
+            s = r.state
+        }
+        assertEquals(9.0, s.doseTodaySed, 1e-9)
+        assertEquals(9.0, dose, 1e-9)
+    }
+
+    @Test
+    fun `alerta de dose sem protetor dispara em metade da MED uma vez por dia`() {
+        // Tipo II: MED 2,5 SED; metade = 1,25 SED; com UV 10 (9 SED/h) leva ~8,3 min.
+        var s = begin()
+        val results = mutableListOf<SunTickResult>()
+        repeat(60) { i ->
+            val r = SunExposure.onTick(s, start + (i + 1) * tick, 50_000f, true, cfg, zone, uvi = 10.0)
+            results += r
+            s = r.state
+        }
+        assertEquals(1, results.count { it.doseAlert })
+        assertEquals(17, results.indexOfFirst { it.doseAlert } + 1) // 17 ticks de 30 s = 8,5 min
+    }
+
+    @Test
+    fun `sem alerta de dose quando ja aplicou protetor hoje`() {
+        var s = SunExposure.applySunscreen(begin(), start, zone)
+        var any = false
+        repeat(60) { i ->
+            val r = SunExposure.onTick(s, start + (i + 1) * tick, 50_000f, true, cfg, zone, uvi = 10.0)
+            any = any || r.doseAlert
+            s = r.state
+        }
+        assertFalse(any)
+    }
+
+    @Test
+    fun `alerta de UV 8 ou mais no maximo a cada 2 h`() {
+        var s = begin()
+        val results = mutableListOf<SunTickResult>()
+        repeat(300) { i -> // 2,5 h
+            val r = SunExposure.onTick(s, start + (i + 1) * tick, 50_000f, true, cfg, zone, uvi = 9.0)
+            results += r
+            s = r.state
+        }
+        assertEquals(2, results.count { it.uvAlert })
+        assertTrue(results.first().uvAlert)
+        assertEquals(241, results.indexOfLast { it.uvAlert } + 1)
+    }
+
+    @Test
+    fun `sem alerta de UV fora do sol`() {
+        val (_, results) = ticks(begin(), start, 20, 2_000f)
+        assertFalse(results.any { it.uvAlert || it.doseAlert })
+    }
+
+    @Test
+    fun `dose zera na virada do dia`() {
+        val beforeMidnight = LocalDateTime.of(2026, 1, 10, 23, 59, 50).atZone(zone).toInstant().toEpochMilli()
+        val s0 = SunState(epochDay = SunExposure.dayOf(beforeMidnight, zone), doseTodaySed = 3.0, lastTickAt = beforeMidnight)
+        val r = SunExposure.onTick(s0, beforeMidnight + tick, 50_000f, true, cfg, zone, uvi = 6.0)
+        // 20 s depois da meia-noite com UV 6.
+        assertEquals(6.0 * 0.9 * 20_000 / 3_600_000, r.state.doseTodaySed, 1e-9)
+    }
 }
