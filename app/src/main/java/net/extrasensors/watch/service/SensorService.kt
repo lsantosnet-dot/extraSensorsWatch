@@ -343,6 +343,7 @@ class SensorService : LifecycleService() {
 
     /** Amostra de pressão; também chamada pelo tick, se o alarme atrasar mais de 6 min. */
     private suspend fun samplePressure() = sampleMutex.withLock {
+        g.state.setDiagSample(null, null) // limpa erro antigo: o diagnóstico mostra só a tentativa atual
         if (!g.pressure.available) {
             g.state.setDiagSample(null, "Barômetro indisponível")
             return@withLock

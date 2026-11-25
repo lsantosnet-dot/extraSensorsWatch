@@ -412,18 +412,41 @@ fun DiagnosticsScreen(g: AppGraph) {
         AboutItem("Bateria", if (unrestricted) "sem restrição" else "otimizada pelo sistema (pode atrasar a coleta)")
         AboutItem("Previsão de UV até", lastUv?.let { t(it) } ?: "sem previsão")
         AboutItem("Último envio ao celular", t(d?.syncPushAt))
-        SecondaryButton("Coletar amostra agora", {
-            ServiceController.send(context, net.extrasensors.watch.service.SensorService.ACTION_SAMPLE_NOW)
-        })
+        // Retorno visível: a coleta leva até ~20 s (duas tentativas de 10 s).
+        var sampling by remember { mutableStateOf<Long?>(null) }
+        var feedback by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(sampling, d?.sampleAt, d?.sampleError, now) {
+            val started = sampling ?: return@LaunchedEffect
+            val sampleAt = d?.sampleAt
+            when {
+                sampleAt != null && sampleAt >= started -> { feedback = "Amostra gravada às ${t(sampleAt)}"; sampling = null }
+                d?.sampleError != null && now - started > 3_000 -> { feedback = "Falhou: ${d?.sampleError}"; sampling = null }
+                now - started > 30_000 -> { feedback = "Sem resposta do serviço em 30 s"; sampling = null }
+            }
+        }
+        SecondaryButton(if (sampling != null) "Coletando…" else "Coletar amostra agora", {
+            if (sampling == null) {
+                feedback = null
+                sampling = System.currentTimeMillis()
+                ServiceController.send(context, net.extrasensors.watch.service.SensorService.ACTION_SAMPLE_NOW)
+            }
+        }, enabled = sampling == null)
+        feedback?.let { Secondary(it, Palette.Primary, 13.sp, top = 4.dp) }
         if (!unrestricted) {
+            var batteryMsg by remember { mutableStateOf<String?>(null) }
             SecondaryButton("Liberar bateria", {
                 val pkg = "package:${context.packageName}".toUri()
-                runCatching {
-                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg))
-                }.onFailure {
-                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg))
+                val opened = listOf(
+                    android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg),
+                    android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                    android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg),
+                ).any { intent ->
+                    runCatching { context.startActivity(intent) }.isSuccess
                 }
+                batteryMsg = if (opened) null
+                else "Este relógio não tem essa tela. Use pelo ADB: dumpsys deviceidle whitelist +${context.packageName}"
             })
+            batteryMsg?.let { Secondary(it, Palette.Sound, 12.sp, top = 4.dp) }
         }
     }
 }
