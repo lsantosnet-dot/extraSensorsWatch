@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -203,6 +205,13 @@ class SamsungSkinTemperatureSource(private val health: SamsungHealthManager) : S
                 close()
             }
         })
+        // Se a conexão com o Health Platform cair, o tracker para em silêncio: fecha o fluxo
+        // para quem coleta poder reconectar e tentar de novo.
+        launch {
+            health.state.first { it !is HealthConnection.Connected }
+            trySend(SkinMeasurement.Failure("Conexão com o serviço de saúde caiu."))
+            close()
+        }
         awaitClose { runCatching { tracker.unsetEventListener() } }
     }
 }

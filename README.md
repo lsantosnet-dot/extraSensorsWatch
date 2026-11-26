@@ -88,7 +88,7 @@ Também há uma **complicação "Sol"** para o mostrador, com o tempo desde o pr
 | Aplique protetor | Sem protetor registrado hoje e dose do dia ≥ 50% da MED do seu tipo de pele (tipo II: 2,5 SED) | Dose eritematosa mínima por tipo de pele |
 | UV muito alto | Exposto com UV ≥ 8, no máximo a cada 2 h | OMS: evitar o sol do meio do dia com UV 8+ |
 
-- **Dose:** índice UV 1 = 25 mW/m² = 0,9 SED por hora. A dose só soma quando o relógio detecta sol (luz forte e relógio no pulso).
+- **Dose:** índice UV 1 = 25 mW/m² = 0,9 SED por hora. A dose só soma quando o relógio detecta sol (luz forte e relógio no pulso), e soma só parte do UV previsto conforme a luz: 30% abaixo de 25 mil lux (sombra clara, céu encoberto), 60% de 25 a 50 mil lux e 100% a partir de 50 mil lux (sol direto).
 - **Tipo de pele:** em Ajustes › Tipo de pele (padrão: tipo II). O app do celular mostra a referência do tipo II.
 - **No celular:** abas **Sol** e **Pele**; filtros Hoje, 7, 30 e 90 dias, 1 ano e período personalizado. Tocar numa barra ou ponto mostra os valores. "Exportar CSV" compartilha o histórico completo em 5 arquivos.
 
@@ -154,7 +154,7 @@ O app só pede as permissões que existem no sistema do relógio. Se o SDK da Sa
 
 1. **Perda de suor sem Health Services.** A especificação previa usar o `ExerciseClient` do Health Services, se o code lab exigisse. A API do SDK 1.4.1 pede só a cadência (`DataType.STEP_PER_MINUTE` via `setExerciseData`), então o app calcula os passos por minuto com o `TYPE_STEP_COUNTER` (janela de 60 s, enviada a cada 10 s). O code lab não pôde ser consultado: o site da Samsung estava inacessível no ambiente de desenvolvimento, e os nomes de API vieram das assinaturas do próprio `.aar`.
 2. **Unidade e códigos do suor.** O valor de `SweatLossSet.SWEAT_LOSS` é tratado como mililitros e convertido para litros. O sexo no perfil usa 1 = masculino e 0 = feminino. `STATUS` igual a 0 é tratado como sucesso, nos dois trackers. **Confira na primeira medição real**: se o resultado vier mil vezes menor ou maior, a unidade é outra (o ajuste fica em `SamsungHealth.kt`).
-3. **Pele também em segundo plano.** Quando o relógio não oferece leitura contínua, o serviço faz uma medição sob demanda a cada 30 min com o relógio no pulso, para formar a média pessoal sem depender de toques. O botão "Medir agora" continua na tela.
+3. **Pele também em segundo plano.** Quando o relógio não oferece leitura contínua, o serviço faz uma medição sob demanda a cada 30 min com o relógio no pulso, para formar a média pessoal sem depender de toques. Com leitura contínua, o serviço espera a permissão de saúde (pedida ao abrir a tela Pele) e, se o fluxo cair por erro ou perda de conexão, tenta de novo com espera crescente (30 s até 30 min); enquanto espera, a medição sob demanda de 30 min cobre o intervalo. O botão "Medir agora" continua na tela.
 4. **Ajustes fora do pager.** A página 9 abre a lista de ajustes numa tela própria, porque no pager a coroa troca de página e numa lista longa ela precisa rolar a lista.
 
 ## Limitações conhecidas

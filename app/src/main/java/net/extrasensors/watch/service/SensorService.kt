@@ -14,13 +14,17 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import net.extrasensors.watch.AppGraph
 import net.extrasensors.watch.ClimbLive
 import net.extrasensors.watch.Permissions
@@ -35,6 +39,7 @@ import net.extrasensors.watch.data.SunDayEntity
 import net.extrasensors.watch.domain.SunTickResult
 import net.extrasensors.watch.sync.WatchSync
 import net.extrasensors.watch.data.SweatResultEntity
+import net.extrasensors.watch.domain.Backoff
 import net.extrasensors.watch.domain.Barometry
 import net.extrasensors.watch.domain.ClimbAccumulator
 import net.extrasensors.watch.domain.ExponentialFilter
@@ -42,6 +47,7 @@ import net.extrasensors.watch.domain.Format
 import net.extrasensors.watch.domain.PressurePoint
 import net.extrasensors.watch.domain.RainAlert
 import net.extrasensors.watch.domain.RainTrend
+import net.extrasensors.watch.domain.SkinSchedule
 import net.extrasensors.watch.domain.SunExposure
 import net.extrasensors.watch.graph
 import net.extrasensors.watch.sensor.SkinMeasurement
@@ -92,7 +98,10 @@ class SensorService : LifecycleService() {
         private const val TICK_MS = 30_000L
         private const val PRESSURE_PERIOD_MS = 5 * 60_000L
         private const val PRESSURE_KEEP_MS = 48 * 60 * 60_000L
-        private const val SKIN_PERIOD_MS = 30 * 60_000L
+        private const val SKIN_PERIOD_MS = SkinSchedule.PERIOD_MS
+        private const val SKIN_POLL_MS = 60_000L
+        private const val SKIN_RETRY_MIN_MS = 30_000L
+        private const val SKIN_RETRY_MAX_MS = 30 * 60_000L
         private const val BUCKET_MS = 5 * 60_000L
         // Renovado durante a sessão; o timeout só age se o app travar.
         private const val SESSION_LOCK_MS = 30 * 60_000L
@@ -187,11 +196,13 @@ class SensorService : LifecycleService() {
                 runCatching {
                     // Batching de até 20 s no hardware para poupar bateria.
                     g.light.readings(batchLatencyUs = 20_000_000).collect { r ->
-                        val wasBright = isBright()
+                        // Ao cruzar o limiar, fecha o intervalo anterior com o lux antigo, para
+                        // os até 30 s no escuro não contarem como sol (e vice-versa).
+                        val crossed = isBright() != isBright(r.value)
+                        if (crossed) tick()
                         lastLux = r.value
                         g.live.lastLux.value = r.value
                         updateSunWakeLock()
-                        if (!wasBright && isBright()) tick()
                     }
                 }.onFailure { Log.w(TAG, "Sensor de luz", it) }
             }
@@ -219,21 +230,32 @@ class SensorService : LifecycleService() {
                 delay(TICK_MS)
             }
         }
-        lifecycleScope.launch { startSkinContinuousIfSupported() }
+        lifecycleScope.launch { skinContinuousLoop() }
         onAlarm()
     }
 
-    private fun isBright(): Boolean = (lastLux ?: 0f) > settings.luxThreshold
+    private fun isBright(lux: Float? = lastLux): Boolean = (lux ?: 0f) > settings.luxThreshold
 
     /** Mantém a CPU acordada só enquanto há luz forte no pulso, para os ticks de 30 s acontecerem. */
     private fun updateSunWakeLock() {
-        val want = settings.background && isBright() && onWrist
-        // Renovado a cada tick; o timeout garante a liberação se algo travar.
+        // instance vira null no início do onDestroy: um tick cancelado ali não pode religar o wakelock.
+        val want = instance === this && settings.background && isBright() && onWrist
+        // Renovado a cada tick (e a cada evento de luz ou de pulso); o timeout garante a
+        // liberação se algo travar. Sem a renovação no tick, sol forte e estável deixa o sensor
+        // de luz (on-change) sem eventos por mais de 10 min e a CPU dorme no meio da exposição.
         if (want) sunLock.acquire(10 * 60_000L)
         if (!want && sunLock.isHeld) sunLock.release()
     }
 
-    private suspend fun tick() = tickMutex.withLock {
+    private suspend fun tick() {
+        try {
+            tickLocked()
+        } finally {
+            updateSunWakeLock()
+        }
+    }
+
+    private suspend fun tickLocked() = tickMutex.withLock {
         if (!settings.background) return@withLock
         val now = System.currentTimeMillis()
         val cfg = settings.sunConfig
@@ -323,6 +345,7 @@ class SensorService : LifecycleService() {
         lifecycleScope.launch {
             try {
                 g.state.setDiagAlarm(System.currentTimeMillis())
+                skinWake.trySend(Unit)
                 if (settings.background) {
                     samplePressure()
                     tick()
@@ -379,41 +402,101 @@ class SensorService : LifecycleService() {
     private fun healthPermitted(): Boolean =
         Permissions.healthRequired(this).all { Permissions.granted(this, it) }
 
-    private suspend fun startSkinContinuousIfSupported() {
-        if (!healthPermitted()) return
-        val mode = g.skin.mode().getOrElse {
-            g.live.skinError.value = it.message
-            return
-        }
-        if (mode != SkinMode.CONTINUOUS) return
-        var lastSaved = g.db.skin().latest()?.timeMillis ?: 0L
-        g.skin.continuous().collect { m ->
-            when (m) {
-                is SkinMeasurement.Success -> {
-                    g.live.skinError.value = null
-                    if (m.timeMillis - lastSaved >= SKIN_PERIOD_MS) {
-                        g.db.skin().insert(SkinTempEntity(timeMillis = m.timeMillis, celsius = m.celsius))
-                        g.db.skin().deleteBefore(m.timeMillis - 30L * 24 * 3600_000)
-                        lastSaved = m.timeMillis
-                    }
-                }
-                is SkinMeasurement.Failure -> Unit
-            }
+    /** Só um uso do sensor de pele por vez no serviço (contínuo ou sob demanda). */
+    private val skinMutex = Mutex()
+    @Volatile private var skinContinuousCollecting = false
+    /** Acordado pelo alarme de 5 min: o delay das corrotinas não anda com a CPU dormindo. */
+    private val skinWake = Channel<Unit>(Channel.CONFLATED)
+
+    /** Espera até o instante [at] do relógio de parede, conferindo a cada minuto ou a cada alarme. */
+    private suspend fun waitSkinUntil(at: Long) {
+        while (true) {
+            val left = at - System.currentTimeMillis()
+            if (left <= 0) return
+            withTimeoutOrNull(minOf(left, SKIN_POLL_MS)) { skinWake.receive() }
         }
     }
 
-    /** Sem leitura contínua: uma medição sob demanda a cada 30 min, com o relógio no pulso. */
+    /**
+     * Leitura contínua da pele que não desiste: espera a permissão de saúde chegar (ela é pedida só
+     * ao abrir a tela Pele, depois do serviço já ter iniciado) e, se o fluxo fechar por erro do
+     * tracker ou queda da conexão, tenta de novo com espera crescente (30 s, 1 min, 2 min... até 30 min).
+     * Em relógio só com medição sob demanda, sai e deixa o [periodicSkin] cuidar.
+     */
+    private suspend fun skinContinuousLoop() {
+        val backoff = Backoff(SKIN_RETRY_MIN_MS, SKIN_RETRY_MAX_MS)
+        while (currentCoroutineContext().isActive) {
+            if (!healthPermitted()) {
+                waitSkinUntil(System.currentTimeMillis() + SKIN_POLL_MS)
+                continue
+            }
+            val mode = g.skin.mode().getOrElse {
+                g.live.skinError.value = it.message
+                null
+            }
+            when (mode) {
+                SkinMode.ON_DEMAND, SkinMode.NONE -> return
+                SkinMode.CONTINUOUS -> if (collectSkinContinuous()) backoff.reset()
+                null -> Unit
+            }
+            waitSkinUntil(System.currentTimeMillis() + backoff.next())
+        }
+    }
+
+    /** Coleta até o fluxo contínuo fechar. Retorna true se chegou ao menos uma leitura válida. */
+    private suspend fun collectSkinContinuous(): Boolean = skinMutex.withLock {
+        var lastSaved = g.db.skin().latest()?.timeMillis ?: 0L
+        var gotSuccess = false
+        var lastFailure: String? = null
+        skinContinuousCollecting = true
+        try {
+            g.skin.continuous().collect { m ->
+                when (m) {
+                    is SkinMeasurement.Success -> {
+                        gotSuccess = true
+                        g.live.skinError.value = null
+                        if (m.timeMillis - lastSaved >= SKIN_PERIOD_MS) {
+                            g.db.skin().insert(SkinTempEntity(timeMillis = m.timeMillis, celsius = m.celsius))
+                            g.db.skin().deleteBefore(m.timeMillis - 30L * 24 * 3600_000)
+                            lastSaved = m.timeMillis
+                        }
+                    }
+                    is SkinMeasurement.Failure -> lastFailure = m.message
+                }
+            }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            Log.w(TAG, "Pele contínua", t)
+            lastFailure = t.message
+        } finally {
+            skinContinuousCollecting = false
+        }
+        // Mostra o motivo na tela Pele só quando a tentativa inteira falhou.
+        if (!gotSuccess && lastFailure != null) g.live.skinError.value = lastFailure
+        gotSuccess
+    }
+
+    /**
+     * Uma medição sob demanda quando a última leitura gravada tem 30 min ou mais, com o relógio
+     * no pulso. Vale também no modo contínuo enquanto a leitura contínua estiver parada,
+     * esperando para tentar de novo.
+     */
     private suspend fun periodicSkin() {
         if (!onWrist || !healthPermitted()) return
         val mode = g.skin.mode().getOrNull() ?: return
-        if (mode != SkinMode.ON_DEMAND) return
         val now = System.currentTimeMillis()
-        val last = g.db.skin().latest()?.timeMillis ?: 0L
-        if (now - last < SKIN_PERIOD_MS) return
-        val m = g.skin.measureOnce(30_000)
-        if (m is SkinMeasurement.Success) {
-            g.db.skin().insert(SkinTempEntity(timeMillis = m.timeMillis, celsius = m.celsius))
-            g.db.skin().deleteBefore(now - 30L * 24 * 3600_000)
+        val last = g.db.skin().latest()?.timeMillis
+        if (!SkinSchedule.onDemandDue(mode != SkinMode.NONE, skinContinuousCollecting, last, now)) return
+        if (!skinMutex.tryLock()) return
+        try {
+            val m = g.skin.measureOnce(30_000)
+            if (m is SkinMeasurement.Success) {
+                g.db.skin().insert(SkinTempEntity(timeMillis = m.timeMillis, celsius = m.celsius))
+                g.db.skin().deleteBefore(now - 30L * 24 * 3600_000)
+            }
+        } finally {
+            skinMutex.unlock()
         }
     }
 

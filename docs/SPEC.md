@@ -192,7 +192,7 @@ Só captura com a tela aberta e o app em primeiro plano. Para ao sair da tela.
 - Horário da leitura ("medido às 14:05").
 - Aviso fixo: "não é temperatura corporal".
 - Fonte: Samsung Health Sensor SDK.
-  - Se o relógio suporta o tracker contínuo, o `SensorService` grava 1 leitura a cada 30 min.
+  - Se o relógio suporta o tracker contínuo, o `SensorService` grava 1 leitura a cada 30 min. A leitura contínua espera a permissão chegar e, se o fluxo fechar (erro do tracker ou queda da conexão), tenta de novo com espera crescente; enquanto isso, a medição sob demanda de 30 min cobre o intervalo.
   - Senão, a tela tem o botão **Medir agora** (tracker sob demanda).
   - A escolha é feita em tempo de execução, consultando os trackers suportados.
 
@@ -242,7 +242,7 @@ Também tem a entrada "Sobre as medições", com os avisos fixos:
 
 ### 5.2 Tendência
 
-- `ΔP = P(agora) − P(3 h atrás)`.
+- `ΔP = P(agora) − P(3 h atrás)`, descontados os degraus de altitude: variações entre amostras seguidas acima de 0,5 hPa por 5 min (cerca de 4 m de desnível) são tratadas como deslocamento (ladeira, carro) e não entram na soma. Uma queda forte de tempo fica perto de 0,1 hPa por 5 min.
 - `P(3 h atrás)`: a amostra mais próxima de `agora − 3 h`, dentro de ±10 min.
 - Sem amostra válida nessa janela, o resultado é `Indisponível` (com o tempo que falta para ter 3 h).
 - Classificação e alerta conforme 4.3.

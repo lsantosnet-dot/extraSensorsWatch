@@ -139,6 +139,36 @@ class SunExposureTest {
         assertEquals(9.0, dose, 1e-9)
     }
 
+    private fun doseFor1h(lux: Float, uvi: Double): Double {
+        var s = SunExposure.onTick(SunExposure.initial(start, zone), start, lux, true, cfg, zone).state
+        repeat(120) { i -> s = SunExposure.onTick(s, start + (i + 1) * tick, lux, true, cfg, zone, uvi = uvi).state }
+        return s.doseTodaySed
+    }
+
+    @Test
+    fun `na sombra a dose soma so parte do UV previsto`() {
+        // UV 10 por 1 h = 9 SED no sol direto; 30% na sombra clara e 60% com sol filtrado.
+        assertEquals(9.0 * 0.3, doseFor1h(15_000f, 10.0), 1e-9)
+        assertEquals(9.0 * 0.6, doseFor1h(30_000f, 10.0), 1e-9)
+        assertEquals(9.0, doseFor1h(80_000f, 10.0), 1e-9)
+    }
+
+    @Test
+    fun `fracao de UV pelos limites de lux`() {
+        assertEquals(0.3, SunExposure.uvFraction(24_999f), 0.0)
+        assertEquals(0.6, SunExposure.uvFraction(25_000f), 0.0)
+        assertEquals(0.6, SunExposure.uvFraction(49_999f), 0.0)
+        assertEquals(1.0, SunExposure.uvFraction(50_000f), 0.0)
+    }
+
+    @Test
+    fun `na sombra o tempo ao sol conta inteiro mesmo com dose menor`() {
+        var s = begin()
+        repeat(120) { i -> s = SunExposure.onTick(s, start + (i + 1) * tick, 15_000f, true, cfg, zone, uvi = 10.0).state }
+        assertEquals(60 * 60_000L, s.todayMs)
+        assertEquals(60 * 60_000L, s.sinceApplicationMs)
+    }
+
     @Test
     fun `alerta de dose sem protetor dispara em metade da MED uma vez por dia`() {
         // Tipo II: MED 2,5 SED; metade = 1,25 SED; com UV 10 (9 SED/h) leva ~8,3 min.
