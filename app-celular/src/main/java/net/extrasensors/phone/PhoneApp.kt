@@ -37,10 +37,16 @@ class Prefs(context: Context) {
         set(v) {
             sp.edit {
                 if (v == null) { remove("lat"); remove("lon") }
-                else { putFloat("lat", v.first.toFloat()); putFloat("lon", v.second.toFloat()) }
+                else {
+                    putFloat("lat", v.first.toFloat()); putFloat("lon", v.second.toFloat())
+                    putLong("location_at", System.currentTimeMillis())
+                }
             }
             touch()
         }
+
+    /** Quando a localização foi obtida pela última vez. */
+    val locationAt: Long get() = sp.getLong("location_at", 0)
 
     var ack: SyncAck
         get() = SyncAck(

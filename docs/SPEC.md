@@ -179,7 +179,7 @@ Só captura com a tela aberta e o app em primeiro plano. Para ao sair da tela.
 | 70–85 | Muito ruidoso |
 | ≥ 85 | Perigoso em exposição longa |
 
-- Barra linear de 30 a 100 dB, com marcador.
+- Barra linear de 30 a 120 dB, com marcador.
 - Linha "média 44 dB · pico 58 dB", sobre a sessão desde a abertura da tela. Zera ao sair.
 - Aviso fixo: "valor aproximado".
 - Pede `RECORD_AUDIO` ao abrir a tela pela primeira vez.
@@ -222,7 +222,7 @@ Lista rolável (`ScalingLazyColumn`). Cada item abre uma tela de edição com st
 | Limite de luz forte | 10.000 lx | 1.000; 2.000–50.000 |
 | Meta de exposição | 2 h | 15 min; 30 min–4 h |
 | Alerta de protetor | ligado | — |
-| Offset do decibelímetro | 90 dB | 0,5; 60–120 |
+| Offset do decibelímetro | 120 dB (0 dBFS de um microfone MEMS típico; o máximo medível é o próprio offset) | 0,5; 80–140 |
 | Medição em segundo plano | ligada | — |
 
 Também tem a entrada "Sobre as medições", com os avisos fixos:

@@ -23,8 +23,8 @@ android {
         applicationId = "net.extrasensors.watch"
         minSdk = 34
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
     }
 
     signingConfigs {

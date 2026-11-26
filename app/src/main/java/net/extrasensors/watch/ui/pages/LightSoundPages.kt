@@ -244,7 +244,7 @@ fun SoundPage(g: AppGraph) {
             PageLabel(label, Palette.Sound)
             BigValue(Format.number(u.current), "dB")
             Secondary(Bands.soundLabel(u.current), Palette.Primary, 15.sp)
-            Meter(Bands.soundFraction(u.current), Palette.Sound, "Escala de 30 a 100 dB", marker = true)
+            Meter(Bands.soundFraction(u.current), Palette.Sound, "Escala de 30 a 120 dB", marker = true)
             Secondary("média ${Format.number(u.mean)} dB · pico ${Format.number(u.peak)} dB", Palette.Support, 13.sp, top = 8.dp)
             Secondary("valor aproximado", top = 2.dp)
         }

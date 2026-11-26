@@ -141,6 +141,9 @@ private fun Screen(vm: PhoneViewModel) {
     val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) vm.updateUv()
     }
+    val bgLocationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) vm.updateUv()
+    }
     LaunchedEffect(Unit) {
         vm.onOpen()
         if (!LocationHelper.permitted(context)) locationLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -171,6 +174,10 @@ private fun Screen(vm: PhoneViewModel) {
                     onUv = {
                         if (LocationHelper.permitted(context)) vm.updateUv()
                         else locationLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+                    },
+                    onBackgroundLocation = {
+                        // No Android 11+ o sistema abre a tela de permissão, onde se escolhe "Permitir o tempo todo".
+                        bgLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                     },
                     onExport = {
                         scope.launch {
@@ -374,7 +381,7 @@ private fun SkinTab(vm: PhoneViewModel) {
 }
 
 @Composable
-private fun StatusCard(vm: PhoneViewModel, onUv: () -> Unit, onExport: () -> Unit) {
+private fun StatusCard(vm: PhoneViewModel, onUv: () -> Unit, onExport: () -> Unit, onBackgroundLocation: () -> Unit) {
     val st by vm.status.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val s = st
@@ -388,12 +395,21 @@ private fun StatusCard(vm: PhoneViewModel, onUv: () -> Unit, onExport: () -> Uni
             Text("Última sincronização: ${whenText(s?.lastSyncAt ?: 0, vm.zone)}", style = MaterialTheme.typography.bodyMedium)
             Text("Índice UV atualizado: ${whenText(s?.uvFetchedAt ?: 0, vm.zone)}", style = MaterialTheme.typography.bodyMedium)
             Text(
-                s?.location?.let { "Local (aprox.): ${num(it.first, 2)}, ${num(it.second, 2)}" }
-                    ?: "Local: sem permissão de localização (necessária para o UV)",
+                s?.location?.let {
+                    "Local (aprox.): ${num(it.first, 2)}, ${num(it.second, 2)} · obtido ${whenText(s.locationAt, vm.zone)}"
+                } ?: "Local: sem permissão de localização (necessária para o UV)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             s?.uvError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            if (s != null && s.location != null && !s.backgroundLocation) {
+                Text(
+                    "O local só é atualizado com este app aberto. Em viagem, o UV pode ser de outra cidade.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onBackgroundLocation) { Text("Atualizar o local sozinho (permitir o tempo todo)") }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
                 Button(onClick = vm::syncNow, enabled = !busy) { Text("Sincronizar agora") }
                 OutlinedButton(onClick = onUv, enabled = !busy) { Text("Atualizar UV") }

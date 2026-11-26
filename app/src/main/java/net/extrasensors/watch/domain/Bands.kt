@@ -28,8 +28,8 @@ object Bands {
         else -> "Perigoso em exposição longa"
     }
 
-    /** Posição na barra linear de 30 a 100 dB (0..1). */
-    fun soundFraction(db: Double): Float = ((db - 30.0) / 70.0).toFloat().coerceIn(0f, 1f)
+    /** Posição na barra linear de 30 a 120 dB (0..1). */
+    fun soundFraction(db: Double): Float = ((db - 30.0) / 90.0).toFloat().coerceIn(0f, 1f)
 }
 
 data class TempReading(val timeMillis: Long, val celsius: Double)

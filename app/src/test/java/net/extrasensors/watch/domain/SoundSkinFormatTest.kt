@@ -86,4 +86,15 @@ class SoundSkinFormatTest {
         assertEquals("Moderado", Bands.soundLabel(40.0))
         assertEquals("Perigoso em exposição longa", Bands.soundLabel(85.0))
     }
+
+    @Test
+    fun `offset padrao permite medir acima de 90 dB`() {
+        val offset = net.extrasensors.watch.data.AppSettings().dbOffset
+        // Senoide a −20 dBFS (lugar barulhento) não pode travar no teto.
+        val rms = SoundMath.FULL_SCALE * Math.pow(10.0, -20.0 / 20)
+        assertEquals(offset - 20, SoundMath.db(rms, offset), 1e-9)
+        assertTrue(offset - 20 > 90)
+        assertEquals(1f, Bands.soundFraction(120.0), 1e-6f)
+        assertEquals(0f, Bands.soundFraction(30.0), 1e-6f)
+    }
 }

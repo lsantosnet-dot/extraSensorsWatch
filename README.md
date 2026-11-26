@@ -148,7 +148,7 @@ O app só pede as permissões que existem no sistema do relógio. Se o SDK da Sa
 - **Altitude:**
   - em Ajustes › Calibrar por altitude conhecida, informe a altitude de onde você está (placa de trilha, mapa topográfico). O app lê a pressão atual e calcula o p0;
   - outra opção: em Ajustes › Pressão ao nível do mar, informe o valor de uma previsão do tempo (o "QNH" de um aeroporto próximo).
-- **Decibelímetro:** com um app medidor no celular ao lado do relógio, ajuste Ajustes › Offset do decibelímetro até os dois valores baterem. O padrão de 90 dB é só um ponto de partida.
+- **Decibelímetro:** com um app medidor no celular ao lado do relógio, ajuste Ajustes › Offset do decibelímetro até os dois valores baterem. O padrão de 120 dB corresponde ao fundo de escala de um microfone MEMS típico (−26 dBFS a 94 dB SPL) e é só um ponto de partida. O maior valor que o app consegue mostrar é o próprio offset, por isso ele não deve ficar baixo demais.
 
 ## Diferenças em relação à especificação
 

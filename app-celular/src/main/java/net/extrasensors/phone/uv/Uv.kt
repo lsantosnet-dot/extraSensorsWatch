@@ -74,10 +74,18 @@ object LocationHelper {
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
+    /**
+     * Localização em segundo plano ("Permitir o tempo todo"). Sem ela, o Android não entrega a
+     * localização ao worker de hora em hora, e o UV fica no último local salvo com o app aberto.
+     */
+    fun backgroundPermitted(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
     /** Arredonda para 2 casas (~1 km): é só o necessário para a previsão de UV. */
     fun rounded(lat: Double, lon: Double) = round(lat * 100) / 100 to round(lon * 100) / 100
 
-    /** Localização aproximada atual (com o app aberto). Salva nas preferências. */
+    /** Localização aproximada atual. Salva nas preferências. */
     @SuppressLint("MissingPermission")
     suspend fun refresh(context: Context): Pair<Double, Double>? {
         if (!permitted(context)) return null
@@ -134,6 +142,10 @@ object UvRepository {
 /** Atualiza a previsão de UV a cada hora, com internet. */
 class UvWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
+        // Em viagem: com permissão de segundo plano, atualiza o local antes de buscar o UV.
+        if (LocationHelper.permitted(applicationContext) && LocationHelper.backgroundPermitted(applicationContext)) {
+            runCatching { LocationHelper.refresh(applicationContext) }
+        }
         if (applicationContext.phoneGraph.prefs.location == null) return Result.success()
         return if (UvRepository.update(applicationContext) == null) Result.success() else Result.retry()
     }

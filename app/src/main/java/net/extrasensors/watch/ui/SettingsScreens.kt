@@ -73,7 +73,7 @@ enum class NumericSetting(
     BAND("Limiar caindo / subindo", "± hPa", 0.5, 0.5, 4.0, 1),
     LUX("Limite de luz forte", "lx", 1000.0, 2000.0, 50000.0, 0),
     GOAL("Meta de exposição", "min", 15.0, 30.0, 240.0, 0),
-    DB_OFFSET("Offset do decibelímetro", "dB", 0.5, 60.0, 120.0, 1),
+    DB_OFFSET("Offset do decibelímetro", "dB", 0.5, 80.0, 140.0, 1),
     HEIGHT("Altura", "cm", 1.0, 100.0, 230.0, 0),
     WEIGHT("Peso", "kg", 0.5, 30.0, 250.0, 1),
     AGE("Idade", "anos", 1.0, 10.0, 100.0, 0),

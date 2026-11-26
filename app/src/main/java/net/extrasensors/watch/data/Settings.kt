@@ -35,7 +35,9 @@ data class AppSettings(
     val luxThreshold: Float = 10_000f,
     val sunGoalMin: Int = 120,
     val sunAlert: Boolean = true,
-    val dbOffset: Double = 90.0,
+    // dB SPL equivalente ao fundo de escala (0 dBFS). Microfones MEMS típicos: −26 dBFS a 94 dB SPL,
+    // ou seja, 0 dBFS ≈ 120 dB SPL. O valor máximo medível é o próprio offset; calibre comparando.
+    val dbOffset: Double = 120.0,
     val background: Boolean = true,
     val skinType: SkinType = SkinType.II,
     val uvAlerts: Boolean = true,

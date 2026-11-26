@@ -40,6 +40,8 @@ data class StatusUi(
     val uvFetchedAt: Long,
     val uvError: String?,
     val location: Pair<Double, Double>?,
+    val locationAt: Long,
+    val backgroundLocation: Boolean,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -90,7 +92,10 @@ class PhoneViewModel(private val g: PhoneGraph) : ViewModel() {
     }
 
     val status: StateFlow<StatusUi?> = combine(g.prefs.changes, nodeTicker) { _, node ->
-        StatusUi(node, g.prefs.lastSyncAt, g.prefs.uvFetchedAt, g.prefs.uvError, g.prefs.location)
+        StatusUi(
+            node, g.prefs.lastSyncAt, g.prefs.uvFetchedAt, g.prefs.uvError, g.prefs.location,
+            g.prefs.locationAt, LocationHelper.backgroundPermitted(g.context),
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Ao abrir o app: processa pendências, pede dados ao relógio e atualiza o UV se preciso. */
