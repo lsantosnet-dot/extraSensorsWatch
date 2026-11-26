@@ -393,6 +393,8 @@ private fun StressTab(vm: PhoneViewModel) {
     var session by remember(period) { mutableStateOf<Long?>(null) }
     val u = ui ?: return
     val s = u.hrvSummary
+    WeeklyCard(vm)
+    HowToCard()
     StatGrid(
         listOf(
             Triple("HRV (última)", s.last?.let { "${num(it.rmssdMs, 0)} ms" } ?: "—", s.last?.status?.label),
@@ -444,6 +446,107 @@ private fun StressTab(vm: PhoneViewModel) {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+@Composable
+private fun WeeklyCard(vm: PhoneViewModel) {
+    val w by vm.weekly.collectAsStateWithLifecycle()
+    val r = w ?: return
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Resumo da semana (últimos 7 dias)", style = MaterialTheme.typography.titleSmall)
+            val hrv = buildString {
+                append("HRV: ${r.hrvCount} medição(ões)")
+                r.meanRmssd?.let { append(" · média ${num(it, 0)} ms") }
+                r.rmssdChange?.let { append(" (${if (it >= 0) "+" else "−"}${num(kotlin.math.abs(it) * 100, 0)}% vs. semana anterior)") }
+                if (r.daysBelow > 0) append(" · ${r.daysBelow} dia(s) abaixo da faixa")
+            }
+            Text(hrv, style = MaterialTheme.typography.bodyMedium)
+            val eda = buildString {
+                append("EDA: ${r.edaSessions} sessão(ões)")
+                r.edaPeaksPerMin?.let { append(" · ${num(it, 1)} picos/min") }
+                r.edaReference?.let { append(" (seu habitual: ${num(it, 1)})") }
+            }
+            Text(eda, style = MaterialTheme.typography.bodyMedium)
+            r.insights.forEach { i ->
+                val color = when (i.tone) {
+                    net.extrasensors.phone.stats.Tone.GOOD -> ChartColors.skin()
+                    net.extrasensors.phone.stats.Tone.ATTENTION -> MaterialTheme.colorScheme.error
+                    net.extrasensors.phone.stats.Tone.NEUTRAL -> MaterialTheme.colorScheme.onSurface
+                    net.extrasensors.phone.stats.Tone.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Row(verticalAlignment = Alignment.Top) {
+                    Spacer(Modifier.padding(top = 7.dp).size(8.dp).background(color, CircleShape))
+                    Spacer(Modifier.size(8.dp))
+                    Text(i.text, style = MaterialTheme.typography.bodyMedium, color = color)
+                }
+            }
+        }
+    }
+}
+
+/** Guia de uso: como medir e como interpretar HRV e EDA. Fica recolhido por padrão. */
+@Composable
+private fun HowToCard() {
+    var open by rememberSaveable { mutableStateOf(false) }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+        Column(Modifier.padding(12.dp)) {
+            TextButton(onClick = { open = !open }) {
+                Text(if (open) "Ocultar o guia" else "Como usar e analisar HRV e EDA")
+            }
+            if (open) {
+                Guide("Regra de ouro", "Compare você com você mesmo. Os números variam muito entre pessoas e com a idade; o app sempre compara com o seu próprio histórico.")
+                Guide(
+                    "HRV: \"estou recuperado?\"",
+                    "Mede a variação entre batimentos, controlada pelo lado do sistema nervoso que acalma o corpo. " +
+                        "Escala de dias. Na faixa: normal para você. Acima: bem recuperado. Abaixo por 1 dia: pode ser só uma " +
+                        "noite ruim. Abaixo por 2 ou 3 dias seguidos, ou média da semana caindo: carga acumulada (estresse, sono, " +
+                        "treino pesado, álcool ou doença começando).",
+                )
+                Guide(
+                    "Como medir a HRV",
+                    "Todo dia no mesmo horário, de preferência ao acordar, antes de café e celular, sentado ou deitado, parado. " +
+                        "O lembrete do relógio (padrão 7h) ajuda. Álcool na noite anterior e refeição pesada derrubam o valor.",
+                )
+                Guide(
+                    "EDA: \"estou ativado agora?\"",
+                    "Mede a condutância da pele, que sobe com o suor do lado acelerador do sistema nervoso. Escala de segundos a " +
+                        "minutos. O número mais útil são os picos por minuto: em repouso, algo como 1 a 3 é comum. O nível (µS) " +
+                        "também sobe com calor, suor do exercício e pulseira apertada. A EDA mede intensidade, não se é bom ou " +
+                        "ruim: ansiedade e empolgação dão a mesma curva.",
+                )
+                Guide(
+                    "Como usar a EDA",
+                    "Grave 5 min sentado e tranquilo como base. Depois grave a situação que quer avaliar (reunião, trânsito, " +
+                        "tarefa) e compare os picos por minuto. Para testar se algo acalma você, grave 5 min de respiração lenta " +
+                        "(uns 6 por minuto) e veja se os picos caem.",
+                )
+                Guide(
+                    "Juntando os dois",
+                    "HRV na faixa e poucos picos: recuperado e calmo. HRV na faixa e muitos picos: situação intensa, mas o corpo " +
+                        "dá conta. HRV baixa e poucos picos: cansaço ou sono ruim. HRV abaixo por dias e muitos picos com " +
+                        "frequência: padrão de estresse acumulado, vale reduzir a carga.",
+                )
+                Guide(
+                    "Como o resumo da semana decide",
+                    "Recuperação baixa: 2 ou mais dias seguidos, ou 3 ou mais dias na semana, abaixo da sua faixa de HRV. " +
+                        "Tendência: média de RMSSD 5% acima ou abaixo da semana anterior. Ativação alta: picos de EDA por minuto " +
+                        "50% acima da sua mediana dos 30 dias anteriores. Duas a três semanas de dados já mostram o seu padrão.",
+                )
+                Guide(
+                    "Limites",
+                    "Acompanhamento pessoal, não diagnóstico. O sensor óptico no pulso é menos preciso que uma cinta no peito. " +
+                        "Se a HRV ficar baixa por semanas, ou o estresse atrapalhar o sono e a rotina, procure um médico.",
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Guide(title: String, body: String) {
+    Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 10.dp))
+    Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

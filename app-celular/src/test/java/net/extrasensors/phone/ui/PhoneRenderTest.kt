@@ -76,7 +76,7 @@ class PhoneRenderTest {
         }
     }
 
-    private fun shot(name: String, tab: String?, chip: String?) {
+    private fun shot(name: String, tab: String?, chip: String?, click: String? = null) {
         val g = PhoneGraph(ApplicationProvider.getApplicationContext())
         seed(g)
         val vm = PhoneViewModel(g)
@@ -84,6 +84,7 @@ class PhoneRenderTest {
         compose.waitForIdle()
         if (chip != null) compose.onNodeWithText(chip).performClick()
         if (tab != null) compose.onNodeWithText(tab).performClick()
+        if (click != null) { compose.waitForIdle(); Thread.sleep(500); compose.waitForIdle(); compose.onNodeWithText(click).performClick() }
         // O Room consulta em outra thread: espera de verdade, não só o relógio do Compose.
         repeat(15) {
             Thread.sleep(200)
@@ -100,4 +101,5 @@ class PhoneRenderTest {
     @Test fun solHoje() = shot("sol-hoje", null, "Hoje")
     @Test fun pele7dias() = shot("pele-7dias", "Pele", null)
     @Test fun estresse30dias() = shot("estresse-30dias", "Estresse", "30 dias")
+    @Test fun estresseGuia() = shot("estresse-guia", "Estresse", null, click = "Como usar e analisar HRV e EDA")
 }

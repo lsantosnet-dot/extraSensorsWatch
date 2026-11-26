@@ -44,3 +44,16 @@ Etapa 3, aprovada na conversa. Relógio 1.6 e celular 1.3.
   - gráfico da sessão de EDA escolhida, com lista de sessões.
 - **Exportar CSV:** inclui `hrv.csv`, `eda_sessoes.csv` e `eda_10s.csv`.
 - **Bancos:** relógio na versão 3, celular na versão 2, ambos com migração testada.
+
+## 5. Resumo semanal e guia (celular 1.4)
+
+- **Cartão "Resumo da semana":** cobre os últimos 7 dias, hoje incluído, sem depender do filtro de período. Mostra:
+  - HRV: número de medições, média, variação contra a semana anterior e dias abaixo da faixa;
+  - EDA: número de sessões e picos por minuto (média ponderada pela duração), comparados com a mediana das sessões dos 30 dias anteriores (exige 3 ou mais sessões).
+- **Leituras automáticas** (ver `stats/Weekly.kt`):
+  - recuperação baixa: 2 ou mais dias seguidos, ou 3 ou mais dias na semana, abaixo da faixa;
+  - tendência: média de RMSSD 5% acima ou abaixo da semana anterior;
+  - ativação alta: picos por minuto 50% acima da mediana;
+  - estresse acumulado: recuperação baixa e ativação alta juntas;
+  - dados insuficientes geram um pedido de mais medições em vez de conclusão.
+- **Guia "Como usar e analisar HRV e EDA":** fica recolhido. Explica a regra de comparar com você mesmo, o protocolo de medição, a leitura de cada sinal, a combinação dos dois, como o resumo decide e os limites (não é diagnóstico).

@@ -106,6 +106,21 @@ class PhoneViewModel(private val g: PhoneGraph) : ViewModel() {
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /** Resumo dos últimos 7 dias (independe do filtro de período). */
+    val weekly: StateFlow<net.extrasensors.phone.stats.WeeklyReport?> = run {
+        val now = System.currentTimeMillis()
+        val day = 86_400_000L
+        combine(
+            dao.hrv(now - 45 * day, now + day),
+            dao.edaSessions(now - 45 * day, now + day),
+            dao.edaPointsForSessions(now - 45 * day, now + day),
+        ) { h, s, pts ->
+            net.extrasensors.phone.stats.WeeklyStress.compute(
+                h, net.extrasensors.phone.stats.StressStats.edaSessions(s, pts, System.currentTimeMillis()), today(), zone,
+            )
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    }
+
     private val nodeTicker = flow {
         while (true) {
             emit(PhoneSync.connectedWatches(g.context).firstOrNull()?.displayName)
