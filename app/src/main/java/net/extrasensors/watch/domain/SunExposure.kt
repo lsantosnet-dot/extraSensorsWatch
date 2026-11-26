@@ -86,6 +86,21 @@ object SunExposure {
     /** O tempo conta para "reaplicar" só com UV ≥ 3 (OMS) ou quando o UV é desconhecido. */
     private fun countsForReapply(uvi: Double?) = uvi == null || uvi >= UvMath.PROTECTION_UVI
 
+    /** Abaixo disso é sombra clara ou céu encoberto (10 a 25 mil lux). */
+    const val SHADE_LUX = 25_000f
+    /** A partir disso é sol direto (50 mil a mais de 100 mil lux). */
+    const val DIRECT_SUN_LUX = 50_000f
+
+    /**
+     * Fração do índice UV previsto que chega ao pulso, pela faixa de luz. Regra prática para não
+     * somar o UV cheio na sombra: 0,3 abaixo de 25 mil lux, 0,6 até 50 mil e 1,0 a partir daí.
+     */
+    fun uvFraction(lux: Float): Double = when {
+        lux < SHADE_LUX -> 0.3
+        lux < DIRECT_SUN_LUX -> 0.6
+        else -> 1.0
+    }
+
     fun onTick(
         state: SunState,
         now: Long,
@@ -99,7 +114,7 @@ object SunExposure {
         val dt = if (last == null) -1 else now - last
         val counting = dt in 1..config.maxGapMs && onWrist && lux != null && lux > config.luxThreshold
         val reapply = countsForReapply(uvi)
-        val dose = if (counting && uvi != null) UvMath.doseSed(uvi, dt) else 0.0
+        val dose = if (counting && uvi != null && lux != null) UvMath.doseSed(uvi, dt) * uvFraction(lux) else 0.0
 
         fun SunState.add(ms: Long, d: Double) = copy(
             todayMs = todayMs + ms,

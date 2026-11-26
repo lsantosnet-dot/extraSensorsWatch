@@ -45,7 +45,7 @@ O Data Layer só conecta apps com o **mesmo applicationId e a mesma assinatura**
 O relógio estima o índice UV do momento por interpolação da previsão horária. A dose é calculada assim:
 
 - 1 unidade de índice UV equivale a 25 mW/m², ou seja, 0,9 SED por hora;
-- a dose só é somada quando o relógio detecta sol (luz forte e relógio no pulso).
+- a dose só é somada quando o relógio detecta sol (luz forte e relógio no pulso), multiplicada por uma fração pela faixa de luz: 0,3 abaixo de 25 mil lux, 0,6 de 25 a 50 mil e 1,0 a partir de 50 mil.
 
 | Alerta | Regra | Base |
 |---|---|---|

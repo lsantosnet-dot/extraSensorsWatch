@@ -36,8 +36,36 @@ object RainTrend {
     }
 
     /**
-     * ΔP = P(agora) − P(3 h atrás). "Agora" é a amostra mais recente (até 10 min de idade);
-     * "3 h atrás" é a amostra mais próxima de agora − 3 h, dentro de ±10 min.
+     * Variação entre duas amostras seguidas que já não pode ser clima: 0,5 hPa por 5 min
+     * (cerca de 4 m de desnível). Uma queda forte de tempo fica perto de 0,1 hPa por 5 min.
+     */
+    const val ALTITUDE_STEP_HPA = 0.5
+    const val ALTITUDE_STEP_PERIOD_MS = 5 * 60 * 1000L
+
+    /** Limiar de degrau entre duas amostras separadas por [dtMillis] (nunca abaixo de 0,5 hPa). */
+    fun stepThreshold(dtMillis: Long): Double =
+        ALTITUDE_STEP_HPA * maxOf(1.0, dtMillis.toDouble() / ALTITUDE_STEP_PERIOD_MS)
+
+    /**
+     * Soma das variações entre amostras seguidas (em ordem de tempo), sem os degraus de altitude:
+     * subir ou descer uma ladeira, a pé ou de carro. O que sobra é a variação do tempo.
+     */
+    fun weatherDelta(samples: List<PressurePoint>): Double {
+        var sum = 0.0
+        for (i in 1 until samples.size) {
+            val a = samples[i - 1]
+            val b = samples[i]
+            val d = b.hPa - a.hPa
+            if (abs(d) <= stepThreshold(b.timeMillis - a.timeMillis)) sum += d
+        }
+        return sum
+    }
+
+    /**
+     * ΔP = P(agora) − P(3 h atrás), sem os degraus de altitude. "Agora" é a amostra mais recente
+     * (até 10 min de idade); "3 h atrás" é a amostra mais próxima de agora − 3 h, dentro de ±10 min.
+     * Variações entre amostras seguidas acima de [stepThreshold] são tratadas como mudança de
+     * altitude e descontadas, para o deslocamento não virar "Queda rápida" nem "Subindo".
      */
     fun compute(samples: List<PressurePoint>, now: Long, t: TrendThresholds): TrendResult {
         val sorted = samples.sortedBy { it.timeMillis }
@@ -52,7 +80,8 @@ object RainTrend {
             .filter { abs(it.timeMillis - target) <= TOLERANCE_MS }
             .minByOrNull { abs(it.timeMillis - target) }
             ?: return TrendResult.Unavailable(if (missing == 0L) TOLERANCE_MS else missing)
-        val delta = latest.hPa - past.hPa
+        val window = sorted.filter { it.timeMillis in past.timeMillis..latest.timeMillis }
+        val delta = weatherDelta(window)
         return TrendResult.Available(delta, classify(delta, t))
     }
 }
