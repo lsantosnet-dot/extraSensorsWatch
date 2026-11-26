@@ -59,4 +59,38 @@ class SharedTest {
         assertEquals("Muito alto", UvMath.category(8.0))
         assertEquals("Extremo", UvMath.category(11.0))
     }
+
+    @Test
+    fun `codec v2 com HRV e EDA`() {
+        val p = SyncPayload(
+            buckets = emptyList(), days = emptyList(), skin = emptyList(), applications = emptyList(),
+            hrv = listOf(HrvMeasurement(1_000, 42.5, 61.2, 58, 60_000)),
+            edaSessions = listOf(EdaSession(2_000, null, 0, 3_000), EdaSession(4_000, 9_000, 1, 9_000)),
+            edaPoints = listOf(EdaPoint(2_010, 2_000, 3.2, 3.0, 3.5, 2)),
+        )
+        assertEquals(p, SyncCodec.decode(SyncCodec.encode(p)))
+        assertEquals(SyncAck(0, 0, 0, 0, 1_000, 9_000, 2_010), SyncAck.of(p))
+    }
+
+    @Test
+    fun `envio antigo v1 continua legivel`() {
+        val p = SyncPayload(listOf(SunBucket(1, 2, 0.1, null, 3)), emptyList(), listOf(SkinReading(5, 33.0)), emptyList())
+        assertEquals(p, SyncCodec.decode(SyncCodec.encode(p, version = 1)))
+    }
+
+    @Test
+    fun `faixa pessoal de HRV`() {
+        val day = 86_400_000L
+        val now = 30 * day
+        val m = listOf(40.0, 45.0, 50.0, 44.0).mapIndexed { i, v -> HrvMeasurement(now - (i + 1) * day, v, 60.0, 60, 60_000) }
+        val b = HrvStats.baseline(m, now)!!
+        assertEquals(4, b.count)
+        assertTrue(b.lowMs < 44.0 && b.highMs > 46.0)
+        assertEquals(HrvStatus.NORMAL, b.status(45.0))
+        assertEquals(HrvStatus.BELOW, b.status(30.0))
+        assertEquals(HrvStatus.ABOVE, b.status(70.0))
+        // Poucas medições ou fora da janela de 7 dias: sem faixa.
+        assertNull(HrvStats.baseline(m.take(2), now))
+        assertNull(HrvStats.baseline(m, now + 20 * day))
+    }
 }

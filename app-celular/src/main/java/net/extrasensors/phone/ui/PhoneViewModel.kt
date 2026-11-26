@@ -34,6 +34,11 @@ import java.time.ZoneId
 
 data class SunUi(val points: List<SunPoint>, val summary: SunSummary)
 data class SkinUi(val points: List<SkinPoint>, val summary: SkinSummary?)
+data class StressUi(
+    val hrv: List<net.extrasensors.phone.stats.HrvPoint>,
+    val hrvSummary: net.extrasensors.phone.stats.HrvSummary,
+    val eda: List<net.extrasensors.phone.stats.EdaSessionSummary>,
+)
 data class StatusUi(
     val watchName: String?,
     val lastSyncAt: Long,
@@ -82,6 +87,23 @@ class PhoneViewModel(private val g: PhoneGraph) : ViewModel() {
 
     val skin: StateFlow<SkinUi?> = period.flatMapLatest { p ->
         dao.skin(p.from(zone), p.to(zone)).map { r -> SkinUi(Stats.skinSeries(p, r, zone), Stats.skinSummary(r)) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val stress: StateFlow<StressUi?> = period.flatMapLatest { p ->
+        val from = p.from(zone)
+        val to = p.to(zone)
+        combine(
+            dao.hrv(from - 7 * 86_400_000L, to),
+            dao.edaSessions(from, to),
+            dao.edaPointsForSessions(from, to),
+        ) { h, s, pts ->
+            val series = net.extrasensors.phone.stats.StressStats.hrvSeries(h, from, to)
+            StressUi(
+                series,
+                net.extrasensors.phone.stats.StressStats.hrvSummary(series),
+                net.extrasensors.phone.stats.StressStats.edaSessions(s, pts, System.currentTimeMillis()),
+            )
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val nodeTicker = flow {
@@ -152,6 +174,21 @@ class PhoneViewModel(private val g: PhoneGraph) : ViewModel() {
             },
             File(dir, "pele.csv").apply {
                 writeText("horario,celsius\n" + dao.allSkin().joinToString("") { "${iso(it.timeMillis)},${num(it.celsius)}\n" })
+            },
+            File(dir, "hrv.csv").apply {
+                writeText("horario,rmssd_ms,fc_media_bpm,batimentos,duracao_s\n" + dao.allHrv().joinToString("") {
+                    "${iso(it.timeMillis)},${num(it.rmssdMs)},${num(it.meanHr)},${it.beats},${it.durationMs / 1000}\n"
+                })
+            },
+            File(dir, "eda_sessoes.csv").apply {
+                writeText("inicio,fim,origem\n" + dao.allEdaSessions().joinToString("") {
+                    "${iso(it.startedAt)},${it.endedAt?.let(::iso) ?: ""},${if (it.source == 1) "corrida" else "manual"}\n"
+                })
+            },
+            File(dir, "eda_10s.csv").apply {
+                writeText("horario,inicio_sessao,media_us,min_us,max_us,picos\n" + dao.allEdaPoints().joinToString("") {
+                    "${iso(it.timeMillis)},${iso(it.sessionStart)},${num(it.mean)},${num(it.min)},${num(it.max)},${it.peaks}\n"
+                })
             },
             File(dir, "uv_previsao.csv").apply {
                 writeText("hora,indice_uv\n" + dao.uvSince(0).joinToString("") { "${iso(it.hourStart)},${num(it.uvi)}\n" })

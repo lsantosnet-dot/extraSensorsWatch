@@ -52,11 +52,14 @@ class Prefs(context: Context) {
         get() = SyncAck(
             sp.getLong("ack_bucket", 0), sp.getLong("ack_day", 0),
             sp.getLong("ack_skin", 0), sp.getLong("ack_app", 0),
+            sp.getLong("ack_hrv", 0), sp.getLong("ack_eda_session", 0), sp.getLong("ack_eda_point", 0),
         )
         set(v) {
             sp.edit {
                 putLong("ack_bucket", v.bucketUpdatedAt).putLong("ack_day", v.dayUpdatedAt)
                     .putLong("ack_skin", v.skinTime).putLong("ack_app", v.applicationTime)
+                    .putLong("ack_hrv", v.hrvTime).putLong("ack_eda_session", v.edaSessionUpdatedAt)
+                    .putLong("ack_eda_point", v.edaPointTime)
             }
         }
 }

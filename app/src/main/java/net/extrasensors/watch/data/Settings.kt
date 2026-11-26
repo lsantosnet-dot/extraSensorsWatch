@@ -40,6 +40,11 @@ data class AppSettings(
     val dbOffset: Double = 120.0,
     val background: Boolean = true,
     val skinType: SkinType = SkinType.II,
+    /** Lembrete diário para medir a HRV e horário em minutos desde 00:00 (padrão 7h). */
+    val hrvReminder: Boolean = true,
+    val hrvReminderMin: Int = 7 * 60,
+    /** Calibrar a altitude pelo GPS ao iniciar uma sessão de subida. */
+    val gpsOnClimb: Boolean = true,
     val uvAlerts: Boolean = true,
     val heightCm: Float? = null,
     val weightKg: Float? = null,
@@ -65,6 +70,9 @@ class SettingsRepository(private val context: Context) {
         val dbOffset = doublePreferencesKey("db_offset")
         val background = booleanPreferencesKey("background")
         val skinType = intPreferencesKey("skin_type")
+        val hrvReminder = booleanPreferencesKey("hrv_reminder")
+        val hrvReminderMin = intPreferencesKey("hrv_reminder_min")
+        val gpsOnClimb = booleanPreferencesKey("gps_on_climb")
         val uvAlerts = booleanPreferencesKey("uv_alerts")
         val height = floatPreferencesKey("height_cm")
         val weight = floatPreferencesKey("weight_kg")
@@ -85,6 +93,9 @@ class SettingsRepository(private val context: Context) {
             dbOffset = p[K.dbOffset] ?: d.dbOffset,
             background = p[K.background] ?: d.background,
             skinType = p[K.skinType]?.let { SkinType.entries.getOrNull(it) } ?: d.skinType,
+            hrvReminder = p[K.hrvReminder] ?: d.hrvReminder,
+            hrvReminderMin = p[K.hrvReminderMin] ?: d.hrvReminderMin,
+            gpsOnClimb = p[K.gpsOnClimb] ?: d.gpsOnClimb,
             uvAlerts = p[K.uvAlerts] ?: d.uvAlerts,
             heightCm = p[K.height],
             weightKg = p[K.weight],
@@ -104,6 +115,9 @@ class SettingsRepository(private val context: Context) {
     suspend fun setSunAlert(v: Boolean) = context.settingsStore.edit { it[K.sunAlert] = v }
     suspend fun setDbOffset(v: Double) = context.settingsStore.edit { it[K.dbOffset] = v }
     suspend fun setBackground(v: Boolean) = context.settingsStore.edit { it[K.background] = v }
+    suspend fun setHrvReminder(v: Boolean) = context.settingsStore.edit { it[K.hrvReminder] = v }
+    suspend fun setHrvReminderMin(v: Int) = context.settingsStore.edit { it[K.hrvReminderMin] = v }
+    suspend fun setGpsOnClimb(v: Boolean) = context.settingsStore.edit { it[K.gpsOnClimb] = v }
     suspend fun setSkinType(v: SkinType) = context.settingsStore.edit { it[K.skinType] = v.ordinal }
     suspend fun setUvAlerts(v: Boolean) = context.settingsStore.edit { it[K.uvAlerts] = v }
     suspend fun setHeight(v: Float) = context.settingsStore.edit { it[K.height] = v }
@@ -137,6 +151,9 @@ class StateRepository(private val context: Context) {
         val diagSampleAt = longPreferencesKey("diag_sample_at")
         val diagSampleError = stringPreferencesKey("diag_sample_error")
         val diagServiceStartAt = longPreferencesKey("diag_service_start_at")
+        val gpsCalAt = longPreferencesKey("gps_cal_at")
+        val gpsCalAlt = doublePreferencesKey("gps_cal_alt")
+        val gpsCalAcc = doublePreferencesKey("gps_cal_acc")
         val lastUvRequest = longPreferencesKey("last_uv_request")
         val rainArmed = booleanPreferencesKey("rain_armed")
         val rainLast = longPreferencesKey("rain_last_alert")
@@ -210,6 +227,18 @@ class StateRepository(private val context: Context) {
             sampleError = p[K.diagSampleError],
             syncPushAt = p[K.lastSyncPush],
         )
+    }
+
+    /** Última calibração da altitude pelo GPS: quando, altitude (m) e precisão (m). */
+    val gpsCalibration: Flow<Triple<Long, Double, Double>?> = context.stateStore.data.map { p ->
+        val t = p[K.gpsCalAt] ?: return@map null
+        Triple(t, p[K.gpsCalAlt] ?: 0.0, p[K.gpsCalAcc] ?: 0.0)
+    }
+
+    suspend fun setGpsCalibration(t: Long, altitude: Double, accuracy: Double) = context.stateStore.edit {
+        it[K.gpsCalAt] = t
+        it[K.gpsCalAlt] = altitude
+        it[K.gpsCalAcc] = accuracy
     }
 
     suspend fun setDiagServiceStart(t: Long) = context.stateStore.edit { it[K.diagServiceStartAt] = t }

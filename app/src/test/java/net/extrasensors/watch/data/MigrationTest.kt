@@ -16,7 +16,7 @@ import org.robolectric.annotation.Config
 class MigrationTest {
 
     @Test
-    fun `migra v1 para v2 preservando dados`() {
+    fun `migra v1 ate v3 preservando dados`() {
         val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
         val name = "migration-test.db"
         ctx.deleteDatabase(name)
@@ -48,6 +48,12 @@ class MigrationTest {
             assertEquals(0, room.uv().between(0, Long.MAX_VALUE).size)
             room.sun().upsertBucket(SunBucketEntity(0, 1, 0.1, 5.0, 1))
             assertEquals(1, room.sun().bucketsSince(0).size)
+            // Tabelas da v3 (migração 2 → 3, encadeada).
+            room.stress().insertHrv(HrvEntity(timeMillis = 10, rmssdMs = 40.0, meanHr = 60.0, beats = 60, durationMs = 60_000))
+            room.stress().upsertSession(EdaSessionEntity(20, null, 0, 20))
+            room.stress().upsertPoint(EdaPointEntity(30, 20, 2.0, 1.9, 2.1, 1))
+            assertEquals(1, room.stress().hrvAfter(0, 10).size)
+            assertEquals(1, room.stress().pointsAfter(0, 10).size)
         }
         room.close()
     }

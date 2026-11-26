@@ -38,6 +38,18 @@ import net.extrasensors.watch.data.SunBucketEntity
 import net.extrasensors.watch.data.SunDayEntity
 import net.extrasensors.watch.domain.SunTickResult
 import net.extrasensors.watch.sync.WatchSync
+import net.extrasensors.watch.HrvPhase
+import net.extrasensors.watch.EdaLive
+import net.extrasensors.watch.GpsPhase
+import net.extrasensors.watch.data.HrvEntity
+import net.extrasensors.watch.data.EdaSessionEntity
+import net.extrasensors.watch.data.EdaPointEntity
+import net.extrasensors.watch.domain.Hrv
+import net.extrasensors.watch.domain.EdaAggregator
+import net.extrasensors.watch.sensor.HeartSample
+import net.extrasensors.watch.sensor.EdaSample
+import net.extrasensors.watch.sensor.GpsAltitude
+import net.extrasensors.watch.sensor.GpsFix
 import net.extrasensors.watch.data.SweatResultEntity
 import net.extrasensors.watch.domain.Backoff
 import net.extrasensors.watch.domain.Barometry
@@ -93,6 +105,13 @@ class SensorService : LifecycleService() {
         const val ACTION_SWEAT_FINISH = "sweat_finish"
         const val ACTION_SWEAT_RESET = "sweat_reset"
         const val ACTION_SAMPLE_NOW = "sample_now"
+        const val ACTION_HRV_MEASURE = "hrv_measure"
+        const val ACTION_HRV_RESET = "hrv_reset"
+        const val ACTION_EDA_START = "eda_start"
+        const val ACTION_EDA_STOP = "eda_stop"
+        const val ACTION_GPS_CALIBRATE = "gps_calibrate"
+        private const val HRV_DURATION_MS = 60_000L
+        private const val GPS_TIMEOUT_MS = 120_000L
 
         private const val TAG = "SensorService"
         private const val TICK_MS = 30_000L
@@ -123,6 +142,10 @@ class SensorService : LifecycleService() {
     private lateinit var sessionLock: PowerManager.WakeLock
 
     private var climbJob: Job? = null
+    private var hrvJob: Job? = null
+    private var edaJob: Job? = null
+    private var gpsJob: Job? = null
+    private var edaAggregator: EdaAggregator? = null
     private var sweatJob: Job? = null
     private var sweatSession: SweatSession? = null
     private var backgroundStarted = false
@@ -153,6 +176,7 @@ class SensorService : LifecycleService() {
         lifecycleScope.launch {
             g.settings.settings.collect { s ->
                 settings = s
+                HrvReminder.schedule(this@SensorService, s)
                 if (s.background) startBackground()
                 updateSunWakeLock()
             }
@@ -170,6 +194,14 @@ class SensorService : LifecycleService() {
             ACTION_SWEAT_RESET -> resetSweat()
             ACTION_STOP_IF_IDLE -> lifecycleScope.launch { stopIfIdle() }
             ACTION_SAMPLE_NOW -> onAlarm()
+            ACTION_HRV_MEASURE -> startHrv()
+            ACTION_HRV_RESET -> if (g.live.hrv.value !is HrvPhase.Measuring) {
+                g.live.hrv.value = HrvPhase.Idle
+                lifecycleScope.launch { stopIfIdle() }
+            }
+            ACTION_EDA_START -> startEda(source = 0)
+            ACTION_EDA_STOP -> lifecycleScope.launch { stopEda() }
+            ACTION_GPS_CALIBRATE -> startGpsCalibration()
         }
         return START_STICKY
     }
@@ -273,6 +305,10 @@ class SensorService : LifecycleService() {
             sun.deleteDaysBefore(s.epochDay - 365)
             sun.deleteBucketsBefore(now - 365L * 24 * 3600_000)
             sun.deleteApplicationsBefore(now - 365L * 24 * 3600_000)
+            // Relógio guarda 90 dias de EDA e 1 ano de HRV; o histórico completo fica no celular.
+            g.db.stress().deletePointsBefore(now - 90L * 24 * 3600_000)
+            g.db.stress().deleteSessionsBefore(now - 90L * 24 * 3600_000)
+            g.db.stress().deleteHrvBefore(now - 365L * 24 * 3600_000)
         }
         sun.upsertDay(SunDayEntity(s.epochDay, s.todayMs, updatedAt = now))
         if (r.exposedMs > 0) {
@@ -520,6 +556,9 @@ class SensorService : LifecycleService() {
             g.state.setActiveClimbSession(id)
             g.db.climb().deletePointsExcept(id)
             runClimb(ClimbSessionEntity(id = id, startedAt = now))
+            if (settings.gpsOnClimb && GpsAltitude.available(this@SensorService) && GpsAltitude.permitted(this@SensorService)) {
+                startGpsCalibration()
+            }
         }
     }
 
@@ -534,12 +573,18 @@ class SensorService : LifecycleService() {
             val filter = ExponentialFilter(0.2)
             var lastSaved = 0L
             var current = session
+            var usedP0 = settings.p0
             g.live.climb.value = ClimbLive(session.id, session.startedAt, acc.gain, acc.loss, null)
             refreshNotification()
             runCatching {
                 g.pressure.readings(1_000_000).collect { r ->
                     val p = filter.add(r.value.toDouble())
-                    val alt = Barometry.altitude(settings.p0, p)
+                    if (settings.p0 != usedP0) {
+                        // Recalibração (GPS ou manual) no meio da sessão: o salto de altitude não é subida.
+                        usedP0 = settings.p0
+                        acc = acc.copy(reference = null)
+                    }
+                    val alt = Barometry.altitude(usedP0, p)
                     acc = acc.add(alt)
                     minAlt = minOf(minAlt ?: alt, alt)
                     maxAlt = maxOf(maxAlt ?: alt, alt)
@@ -599,6 +644,8 @@ class SensorService : LifecycleService() {
             val startedAt = System.currentTimeMillis()
             g.live.sweat.value = SweatPhase.Running(startedAt)
             refreshNotification()
+            // Grava a EDA junto com a corrida, se o relógio tiver o sensor e a permissão.
+            if (g.live.eda.value == null && edaPermitted() && g.eda.isSupported().getOrDefault(false)) startEda(source = 1)
             if (g.steps.available && Permissions.granted(this@SensorService, Manifest.permission.ACTIVITY_RECOGNITION)) {
                 val window = ArrayDeque<Pair<Long, Float>>()
                 var lastFeed = 0L
@@ -627,6 +674,7 @@ class SensorService : LifecycleService() {
         sweatSession = null
         g.live.sweat.value = SweatPhase.Calculating
         lifecycleScope.launch {
+            if (g.live.eda.value?.source == 1) stopEda()
             val outcome = session.finish()
             val now = System.currentTimeMillis()
             g.live.sweat.value = when (outcome) {
@@ -648,9 +696,12 @@ class SensorService : LifecycleService() {
         lifecycleScope.launch { stopIfIdle() }
     }
 
+    private fun otherSessionsBusy(): Boolean =
+        g.live.hrv.value is HrvPhase.Measuring || g.live.eda.value != null || g.live.gps.value is GpsPhase.Searching
+
     private fun releaseSessionLockIfIdle() {
         val sweatBusy = g.live.sweat.value is SweatPhase.Running || g.live.sweat.value is SweatPhase.Calculating
-        if (g.live.climb.value == null && !sweatBusy && sessionLock.isHeld) sessionLock.release()
+        if (g.live.climb.value == null && !sweatBusy && !otherSessionsBusy() && sessionLock.isHeld) sessionLock.release()
     }
 
     /** Para o serviço quando a medição de fundo está desligada e não há sessão ativa. */
@@ -658,8 +709,170 @@ class SensorService : LifecycleService() {
         val s = g.settings.current()
         val sweatBusy = g.live.sweat.value is SweatPhase.Running || g.live.sweat.value is SweatPhase.Calculating ||
             g.live.sweat.value is SweatPhase.Starting
-        if (!s.background && g.live.climb.value == null && !sweatBusy) {
+        if (!s.background && g.live.climb.value == null && !sweatBusy && !otherSessionsBusy()) {
             stopSelf()
+        }
+    }
+
+    /** Interrompe uma coleta de fluxo sem cancelar a rotina que vem depois dela. */
+    private object StopCollect : RuntimeException() {
+        private fun readResolve(): Any = StopCollect
+    }
+
+    private suspend fun stoppable(block: suspend () -> Unit) {
+        try { block() } catch (_: StopCollect) { }
+    }
+
+    // ---------------- HRV (1 min parado) ----------------
+
+    private fun startHrv() {
+        if (hrvJob?.isActive == true) return
+        if (!healthPermitted()) {
+            g.live.hrv.value = HrvPhase.Error("Permissão de sensores de saúde negada.")
+            return
+        }
+        val startedAt = System.currentTimeMillis()
+        g.live.hrv.value = HrvPhase.Measuring(startedAt, 0)
+        holdSessionLock()
+        hrvJob = lifecycleScope.launch {
+            val ibis = mutableListOf<Int>()
+            var firstAt: Long? = null
+            var failure: String? = null
+            // Até 75 s: espera o sensor estabilizar e grava 60 s a partir do primeiro intervalo válido.
+            stoppable { withTimeoutOrNull(HRV_DURATION_MS + 15_000) {
+                g.heart.samples().collect { smp ->
+                    when (smp) {
+                        is HeartSample.Failure -> { failure = smp.message; throw StopCollect }
+                        is HeartSample.Ibis -> {
+                            val now = System.currentTimeMillis()
+                            if (firstAt == null) firstAt = now
+                            ibis += smp.ibis
+                            g.live.hrv.value = HrvPhase.Measuring(startedAt, ibis.size)
+                            if (now - firstAt >= HRV_DURATION_MS) throw StopCollect
+                        }
+                    }
+                }
+            } }
+            val result = Hrv.rmssd(ibis)
+            g.live.hrv.value = when {
+                failure != null -> HrvPhase.Error(failure)
+                result == null -> HrvPhase.Error("Poucos batimentos válidos (${ibis.size}). Fique parado, com o relógio firme, e tente de novo.")
+                else -> {
+                    val end = System.currentTimeMillis()
+                    g.db.stress().insertHrv(
+                        HrvEntity(timeMillis = end, rmssdMs = result.rmssdMs, meanHr = result.meanHr, beats = result.beats, durationMs = end - startedAt)
+                    )
+                    Notifications.cancel(this@SensorService, Notifications.ID_HRV)
+                    lifecycleScope.launch { WatchSync.push(this@SensorService, force = true) }
+                    HrvPhase.Done(result.rmssdMs, result.meanHr, result.beats)
+                }
+            }
+            releaseSessionLockIfIdle()
+        }
+    }
+
+    // ---------------- EDA (sessões) ----------------
+
+    private fun edaPermitted(): Boolean = Permissions.edaRequired(this).all { Permissions.granted(this, it) }
+
+    private fun startEda(source: Int) {
+        if (edaJob?.isActive == true) return
+        if (!edaPermitted()) {
+            g.live.edaError.value = "Permissão de sensores de saúde negada."
+            return
+        }
+        val startedAt = System.currentTimeMillis()
+        g.live.edaError.value = null
+        g.live.eda.value = EdaLive(startedAt, source, null, 0.0)
+        holdSessionLock()
+        edaJob = lifecycleScope.launch {
+            val dao = g.db.stress()
+            dao.upsertSession(EdaSessionEntity(startedAt, null, source, startedAt))
+            val agg = EdaAggregator()
+            edaAggregator = agg
+            var peaks = 0
+            stoppable { g.eda.samples().collect { smp ->
+                when (smp) {
+                    is EdaSample.Failure -> {
+                        g.live.edaError.value = smp.message
+                        throw StopCollect
+                    }
+                    is EdaSample.Reading -> {
+                        agg.add(smp.timeMillis, smp.microsiemens)?.let { w ->
+                            peaks += w.peaks
+                            dao.upsertPoint(EdaPointEntity(w.timeMillis, startedAt, w.mean, w.min, w.max, w.peaks))
+                            holdSessionLock()
+                        }
+                        val minutes = (System.currentTimeMillis() - startedAt) / 60_000.0
+                        g.live.eda.value = EdaLive(startedAt, source, smp.microsiemens, if (minutes > 0.5) peaks / minutes else 0.0)
+                    }
+                }
+            } }
+        }
+        edaJob?.invokeOnCompletion {
+            // Erro do sensor: fecha a sessão também.
+            if (g.live.eda.value?.startedAt == startedAt && g.live.edaError.value != null) {
+                lifecycleScope.launch { stopEda() }
+            }
+        }
+    }
+
+    private suspend fun stopEda() {
+        val live = g.live.eda.value ?: return
+        edaJob?.cancel()
+        edaJob = null
+        val now = System.currentTimeMillis()
+        val dao = g.db.stress()
+        edaAggregator?.flush()?.let { w ->
+            dao.upsertPoint(EdaPointEntity(w.timeMillis, live.startedAt, w.mean, w.min, w.max, w.peaks))
+        }
+        edaAggregator = null
+        dao.upsertSession(EdaSessionEntity(live.startedAt, now, live.source, now))
+        g.live.eda.value = null
+        WatchSync.push(this, force = true)
+        releaseSessionLockIfIdle()
+        stopIfIdle()
+    }
+
+    // ---------------- Calibração da altitude pelo GPS ----------------
+
+    private fun startGpsCalibration() {
+        if (gpsJob?.isActive == true) return
+        if (!GpsAltitude.available(this)) {
+            g.live.gps.value = GpsPhase.Error("Este relógio não tem GPS.")
+            return
+        }
+        if (!GpsAltitude.permitted(this)) {
+            g.live.gps.value = GpsPhase.Error("Permissão de localização precisa negada.")
+            return
+        }
+        val startedAt = System.currentTimeMillis()
+        g.live.gps.value = GpsPhase.Searching(null, startedAt)
+        holdSessionLock()
+        gpsJob = lifecycleScope.launch {
+            var outcome: GpsPhase = GpsPhase.Error("Sem sinal de GPS bom em 2 min. Tente ao ar livre, com o céu aberto.")
+            stoppable { withTimeoutOrNull(GPS_TIMEOUT_MS) {
+                GpsAltitude.fixes(this@SensorService).collect { f ->
+                    when (f) {
+                        is GpsFix.Searching -> g.live.gps.value = GpsPhase.Searching(f.verticalAccuracy, startedAt)
+                        is GpsFix.Failure -> { outcome = GpsPhase.Error(f.message); throw StopCollect }
+                        is GpsFix.Done -> {
+                            val p = g.pressure.sampleMedian(3_000)
+                            outcome = if (p == null) {
+                                GpsPhase.Error("Sem leitura do barômetro para calibrar.")
+                            } else {
+                                val p0 = Barometry.p0FromAltitude(p, f.altitudeMsl)
+                                g.settings.setP0(p0)
+                                g.state.setGpsCalibration(System.currentTimeMillis(), f.altitudeMsl, f.verticalAccuracy)
+                                GpsPhase.Done(f.altitudeMsl, f.verticalAccuracy, p0)
+                            }
+                            throw StopCollect
+                        }
+                    }
+                }
+            } }
+            g.live.gps.value = outcome
+            releaseSessionLockIfIdle()
         }
     }
 }

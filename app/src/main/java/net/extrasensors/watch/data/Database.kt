@@ -40,6 +40,37 @@ data class SunBucketEntity(
     val updatedAt: Long,
 )
 
+/** Medição de HRV de 1 min. */
+@Entity(tableName = "hrv_measurement")
+data class HrvEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val timeMillis: Long,
+    val rmssdMs: Double,
+    val meanHr: Double,
+    val beats: Int,
+    val durationMs: Long,
+)
+
+/** Sessão de atividade eletrodérmica. source: 0 = manual, 1 = corrida (tela Suor). */
+@Entity(tableName = "eda_session")
+data class EdaSessionEntity(
+    @PrimaryKey val startedAt: Long,
+    val endedAt: Long?,
+    val source: Int,
+    val updatedAt: Long,
+)
+
+/** Janela de 10 s de EDA. */
+@Entity(tableName = "eda_point")
+data class EdaPointEntity(
+    @PrimaryKey val timeMillis: Long,
+    val sessionStart: Long,
+    val mean: Double,
+    val min: Double,
+    val max: Double,
+    val peaks: Int,
+)
+
 /** Previsão horária do índice UV recebida do celular. */
 @Entity(tableName = "uv_hour")
 data class UvHourEntity(
@@ -190,6 +221,51 @@ interface SkinTempDao {
 }
 
 @Dao
+interface StressDao {
+    @Insert
+    suspend fun insertHrv(h: HrvEntity)
+
+    @Query("SELECT * FROM hrv_measurement WHERE timeMillis > :after ORDER BY timeMillis LIMIT :limit")
+    suspend fun hrvAfter(after: Long, limit: Int): List<HrvEntity>
+
+    @Query("SELECT * FROM hrv_measurement WHERE timeMillis >= :since ORDER BY timeMillis")
+    fun observeHrvSince(since: Long): Flow<List<HrvEntity>>
+
+    @Query("SELECT * FROM hrv_measurement WHERE timeMillis >= :since ORDER BY timeMillis")
+    suspend fun hrvSince(since: Long): List<HrvEntity>
+
+    @Query("DELETE FROM hrv_measurement WHERE timeMillis < :before")
+    suspend fun deleteHrvBefore(before: Long)
+
+    @Upsert
+    suspend fun upsertSession(s: EdaSessionEntity)
+
+    @Query("SELECT * FROM eda_session WHERE updatedAt > :after ORDER BY updatedAt LIMIT :limit")
+    suspend fun sessionsUpdatedAfter(after: Long, limit: Int): List<EdaSessionEntity>
+
+    @Query("SELECT * FROM eda_session ORDER BY startedAt DESC LIMIT 1")
+    fun observeLatestSession(): Flow<EdaSessionEntity?>
+
+    @Query("SELECT * FROM eda_session WHERE startedAt = :start")
+    suspend fun session(start: Long): EdaSessionEntity?
+
+    @Upsert
+    suspend fun upsertPoint(p: EdaPointEntity)
+
+    @Query("SELECT * FROM eda_point WHERE timeMillis > :after ORDER BY timeMillis LIMIT :limit")
+    suspend fun pointsAfter(after: Long, limit: Int): List<EdaPointEntity>
+
+    @Query("SELECT * FROM eda_point WHERE sessionStart = :start ORDER BY timeMillis")
+    fun observePoints(start: Long): Flow<List<EdaPointEntity>>
+
+    @Query("DELETE FROM eda_point WHERE timeMillis < :before")
+    suspend fun deletePointsBefore(before: Long)
+
+    @Query("DELETE FROM eda_session WHERE startedAt < :before")
+    suspend fun deleteSessionsBefore(before: Long)
+}
+
+@Dao
 interface UvDao {
     @Upsert
     suspend fun upsert(hours: List<UvHourEntity>)
@@ -224,8 +300,11 @@ interface SweatDao {
         SweatResultEntity::class,
         SunBucketEntity::class,
         UvHourEntity::class,
+        HrvEntity::class,
+        EdaSessionEntity::class,
+        EdaPointEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -235,6 +314,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun skin(): SkinTempDao
     abstract fun sweat(): SweatDao
     abstract fun uv(): UvDao
+    abstract fun stress(): StressDao
 
     companion object {
         /** v1 → v2: blocos de sol, previsão de UV e updatedAt nos totais diários. */
@@ -253,9 +333,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v2 → v3: HRV e sessões de EDA. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `hrv_measurement` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`timeMillis` INTEGER NOT NULL, `rmssdMs` REAL NOT NULL, `meanHr` REAL NOT NULL, " +
+                        "`beats` INTEGER NOT NULL, `durationMs` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `eda_session` (`startedAt` INTEGER NOT NULL, `endedAt` INTEGER, " +
+                        "`source` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`startedAt`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `eda_point` (`timeMillis` INTEGER NOT NULL, `sessionStart` INTEGER NOT NULL, " +
+                        "`mean` REAL NOT NULL, `min` REAL NOT NULL, `max` REAL NOT NULL, `peaks` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`timeMillis`))"
+                )
+            }
+        }
+
         fun create(context: Context, name: String = "sensors.db"): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

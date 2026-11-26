@@ -26,12 +26,16 @@ object Notifications {
     const val CH_SERVICE = "medindo"
     const val CH_RAIN = "chuva"
     const val CH_SUN = "protetor"
+    const val CH_HRV = "recuperacao"
+    const val PAGE_HRV = 9
+    const val PAGE_EDA = 10
 
     const val ID_SERVICE = 1
     const val ID_RAIN = 2
     const val ID_SUN = 3
     const val ID_DOSE = 4
     const val ID_UV = 5
+    const val ID_HRV = 6
 
     fun createChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -45,6 +49,9 @@ object Notifications {
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 300, 200, 300)
             }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_HRV, "Lembrete de recuperação (HRV)", NotificationManager.IMPORTANCE_DEFAULT)
         )
         nm.createNotificationChannel(
             NotificationChannel(CH_SUN, "Protetor solar", NotificationManager.IMPORTANCE_HIGH).apply {
@@ -88,6 +95,8 @@ object Notifications {
         if (!Permissions.notificationsGranted(context)) return
         NotificationManagerCompat.from(context).notify(id, n)
     }
+
+    fun postPublic(context: Context, id: Int, n: Notification) = post(context, id, n)
 
     fun updateService(context: Context, text: String, page: Int) =
         post(context, ID_SERVICE, serviceNotification(context, text, page))

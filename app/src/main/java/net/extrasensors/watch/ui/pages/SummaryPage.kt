@@ -74,10 +74,14 @@ class SummaryViewModel(g: AppGraph) : ViewModel() {
             ?: Format.NO_DATA
     }
 
-    private val miscPart = combine(g.state.lastDb, g.db.skin().observeLatest()) { db, skin ->
+    private val miscPart = combine(
+        g.state.lastDb, g.db.skin().observeLatest(),
+        g.db.stress().observeHrvSince(System.currentTimeMillis() - 30L * 86_400_000),
+    ) { db, skin, hrv ->
         val dbText = db?.let { Format.number(it.first) + " dB" } ?: Format.NO_DATA
         val skinText = skin?.let { Format.number(it.celsius, 1) + " °C" } ?: Format.NO_DATA
-        dbText to skinText
+        val hrvText = hrv.lastOrNull()?.let { Format.number(it.rmssdMs) + " ms" } ?: Format.NO_DATA
+        Triple(dbText, skinText, hrvText)
     }
 
     val rows: StateFlow<List<SummaryRow>> =
@@ -89,6 +93,7 @@ class SummaryViewModel(g: AppGraph) : ViewModel() {
                 SummaryRow("Sol", sun, Palette.Sun, 5),
                 SummaryRow("Som", misc.first, Palette.Sound, 6),
                 SummaryRow("Pele", misc.second, Palette.Skin, 7),
+                SummaryRow("HRV", misc.third, HrvColor, 9),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 }

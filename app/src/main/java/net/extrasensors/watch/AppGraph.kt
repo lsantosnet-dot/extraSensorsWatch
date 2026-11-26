@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import net.extrasensors.watch.data.AppDatabase
 import net.extrasensors.watch.data.SettingsRepository
 import net.extrasensors.watch.data.StateRepository
@@ -32,6 +33,25 @@ sealed interface SweatPhase {
     data class Error(val message: String) : SweatPhase
 }
 
+/** Medição de HRV de 1 min, publicada pelo serviço. */
+sealed interface HrvPhase {
+    data object Idle : HrvPhase
+    data class Measuring(val startedAt: Long, val beats: Int) : HrvPhase
+    data class Done(val rmssdMs: Double, val meanHr: Double, val beats: Int) : HrvPhase
+    data class Error(val message: String) : HrvPhase
+}
+
+/** Sessão de EDA em andamento. */
+data class EdaLive(val startedAt: Long, val source: Int, val current: Double?, val peaksPerMin: Double)
+
+/** Calibração da altitude pelo GPS. */
+sealed interface GpsPhase {
+    data object Idle : GpsPhase
+    data class Searching(val accuracy: Double?, val startedAt: Long) : GpsPhase
+    data class Done(val altitude: Double, val accuracy: Double, val p0: Double) : GpsPhase
+    data class Error(val message: String) : GpsPhase
+}
+
 data class ClimbLive(
     val sessionId: Long,
     val startedAt: Long,
@@ -48,6 +68,10 @@ class LiveState {
     val climb = MutableStateFlow<ClimbLive?>(null)
     val sweat = MutableStateFlow<SweatPhase>(SweatPhase.Idle)
     val skinError = MutableStateFlow<String?>(null)
+    val hrv = MutableStateFlow<HrvPhase>(HrvPhase.Idle)
+    val eda = MutableStateFlow<EdaLive?>(null)
+    val edaError = MutableStateFlow<String?>(null)
+    val gps = MutableStateFlow<GpsPhase>(GpsPhase.Idle)
 }
 
 class AppGraph(val context: Context) {
@@ -66,6 +90,8 @@ class AppGraph(val context: Context) {
     val health = SamsungHealthManager(context)
     val skin = SamsungSkinTemperatureSource(health)
     val sweat = SamsungSweatLossSource(health)
+    val heart = net.extrasensors.watch.sensor.SamsungHeartSource(health)
+    val eda = net.extrasensors.watch.sensor.SamsungEdaSource(health)
 }
 
 class ExtraSensorsApp : Application() {
@@ -76,6 +102,10 @@ class ExtraSensorsApp : Application() {
         super.onCreate()
         graph = AppGraph(this)
         net.extrasensors.watch.service.Notifications.createChannels(this)
+        // Lembrete diário de HRV: reagenda sempre que os ajustes mudam (e a cada início do processo).
+        graph.appScope.launch {
+            graph.settings.settings.collect { net.extrasensors.watch.service.HrvReminder.schedule(this@ExtraSensorsApp, it) }
+        }
     }
 }
 
@@ -95,6 +125,11 @@ object Permissions {
         else Manifest.permission.BODY_SENSORS
         return listOf(base).filter { defined(context, it) }
     }
+
+    /** EDA no Android 16+: a permissão adicional da Samsung é obrigatória (se existir no sistema). */
+    fun edaRequired(context: Context): List<String> = healthRequired(context) + listOf(
+        "com.samsung.android.hardware.sensormanager.permission.READ_ADDITIONAL_HEALTH_DATA",
+    ).filter { defined(context, it) }
 
     /** Permissões adicionais pedidas junto, mas que não bloqueiam a tela se negadas. */
     fun healthOptional(context: Context): List<String> = listOf(

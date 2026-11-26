@@ -12,4 +12,4 @@ fun tickerFlow(periodMs: Long): Flow<Long> = flow {
     }
 }
 
-const val PAGE_COUNT = 10
+const val PAGE_COUNT = 12

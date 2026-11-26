@@ -52,6 +52,7 @@ import net.extrasensors.watch.domain.Barometry
 import net.extrasensors.watch.domain.Format
 import net.extrasensors.watch.service.ServiceController
 import net.extrasensors.watch.ui.components.PageLabel
+import net.extrasensors.watch.ui.components.PermissionGate
 import net.extrasensors.watch.ui.components.Palette
 import net.extrasensors.watch.ui.components.RoundPage
 import net.extrasensors.watch.ui.components.Secondary
@@ -77,6 +78,7 @@ enum class NumericSetting(
     HEIGHT("Altura", "cm", 1.0, 100.0, 230.0, 0),
     WEIGHT("Peso", "kg", 0.5, 30.0, 250.0, 1),
     AGE("Idade", "anos", 1.0, 10.0, 100.0, 0),
+    HRV_TIME("Horário do lembrete de HRV", "", 15.0, 0.0, 23.0 * 60 + 45, 0),
     ;
 
     fun get(s: AppSettings): Double? = when (this) {
@@ -89,6 +91,7 @@ enum class NumericSetting(
         HEIGHT -> s.heightCm?.toDouble()
         WEIGHT -> s.weightKg?.toDouble()
         AGE -> s.age?.toDouble()
+        HRV_TIME -> s.hrvReminderMin.toDouble()
     }
 
     /** Valor inicial do editor quando ainda não há valor salvo. */
@@ -110,11 +113,13 @@ enum class NumericSetting(
         HEIGHT -> r.setHeight(v.toFloat())
         WEIGHT -> r.setWeight(v.toFloat())
         AGE -> r.setAge(v.toInt())
+        HRV_TIME -> r.setHrvReminderMin(v.toInt())
     }
 
     fun format(v: Double?): String = when {
         v == null -> "não definido"
         this == GOAL -> Format.duration((v * 60_000).toLong())
+        this == HRV_TIME -> "%02d:%02d".format(v.toInt() / 60, v.toInt() % 60)
         this == BAND -> "± " + Format.number(v, decimals) + " hPa"
         else -> Format.number(v, decimals) + " " + unit
     }
@@ -139,6 +144,7 @@ fun SettingsListScreen(
     onGender: () -> Unit,
     onSkinType: () -> Unit,
     onDiagnostics: () -> Unit,
+    onGps: () -> Unit,
     onAbout: () -> Unit,
 ) {
     val s by g.settings.settings.collectAsStateWithLifecycle(AppSettings())
@@ -151,6 +157,10 @@ fun SettingsListScreen(
             item { ListHeader { Text("Barômetro e chuva", color = Palette.Baro) } }
             item { SettingButton(NumericSetting.P0.title, NumericSetting.P0.format(s.p0)) { onEdit(NumericSetting.P0) } }
             item { SettingButton("Calibrar por altitude conhecida", "calcula p0 a partir da pressão atual", onCalibrate) }
+            item { SettingButton("Calibrar pelo GPS", "altitude do GPS, sem internet", onGps) }
+            item {
+                Toggle("GPS ao iniciar a Subida", s.gpsOnClimb) { v -> scope.launch { g.settings.setGpsOnClimb(v) } }
+            }
             item { SettingButton(NumericSetting.RAPID_FALL.title, NumericSetting.RAPID_FALL.format(s.rapidFall)) { onEdit(NumericSetting.RAPID_FALL) } }
             item { SettingButton(NumericSetting.BAND.title, NumericSetting.BAND.format(s.band)) { onEdit(NumericSetting.BAND) } }
             item {
@@ -182,6 +192,12 @@ fun SettingsListScreen(
                 )
             }
             item { SettingButton(NumericSetting.AGE.title, NumericSetting.AGE.format(s.age?.toDouble())) { onEdit(NumericSetting.AGE) } }
+
+            item { ListHeader { Text("Recuperação (HRV)", color = net.extrasensors.watch.ui.pages.HrvColor) } }
+            item {
+                Toggle("Lembrete diário de HRV", s.hrvReminder) { v -> scope.launch { g.settings.setHrvReminder(v) } }
+            }
+            item { SettingButton(NumericSetting.HRV_TIME.title, NumericSetting.HRV_TIME.format(s.hrvReminderMin.toDouble())) { onEdit(NumericSetting.HRV_TIME) } }
 
             item { ListHeader { Text("Geral") } }
             item {
@@ -451,6 +467,57 @@ fun DiagnosticsScreen(g: AppGraph) {
     }
 }
 
+/** Calibra a altitude (p0) pelo GPS do relógio. O serviço faz a busca; aqui só o progresso. */
+@Composable
+fun GpsCalibrationScreen(g: AppGraph) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    PermissionGate(
+        "Calibrar pelo GPS", Palette.Baro,
+        required = listOf(android.Manifest.permission.ACCESS_FINE_LOCATION),
+        optional = listOf(android.Manifest.permission.ACCESS_COARSE_LOCATION),
+        rationale = "O GPS do relógio mede a altitude para calibrar o barômetro. Nada é enviado à internet.",
+    ) {
+        val phase by g.live.gps.collectAsStateWithLifecycle()
+        val last by g.state.gpsCalibration.collectAsStateWithLifecycle(null)
+        val now = net.extrasensors.watch.ui.components.rememberNow(1_000)
+        val start = { ServiceController.send(context, net.extrasensors.watch.service.SensorService.ACTION_GPS_CALIBRATE) }
+        RoundPage {
+            PageLabel("Calibrar pelo GPS", Palette.Baro)
+            when (val p = phase) {
+                is net.extrasensors.watch.GpsPhase.Searching -> {
+                    Secondary("Procurando sinal…", Palette.Primary, 16.sp, top = 10.dp)
+                    Secondary(
+                        (p.accuracy?.let { "precisão vertical ${Format.number(it)} m (meta: 10 m)" } ?: "aguardando satélites") +
+                            " · ${Format.clock(now - p.startedAt)}",
+                    )
+                    Secondary("Fique ao ar livre, com o céu aberto.", top = 6.dp)
+                }
+                is net.extrasensors.watch.GpsPhase.Done -> {
+                    Secondary("Altitude ${Format.number(p.altitude)} m (±${Format.number(p.accuracy)} m)", Palette.Primary, 16.sp, top = 10.dp)
+                    Secondary("p0 ajustado para ${Format.number(p.p0, 2)} hPa")
+                    SecondaryButton("Calibrar de novo", start)
+                }
+                is net.extrasensors.watch.GpsPhase.Error -> {
+                    Secondary(p.message, Palette.Primary, 14.sp, top = 10.dp)
+                    SecondaryButton("Tentar de novo", start)
+                }
+                net.extrasensors.watch.GpsPhase.Idle -> {
+                    Secondary(
+                        last?.let {
+                            "Última: ${Format.number(it.second)} m (±${Format.number(it.third)} m) em " +
+                                java.time.Instant.ofEpochMilli(it.first).atZone(java.time.ZoneId.systemDefault())
+                                    .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm"))
+                        } ?: "Nunca calibrado pelo GPS",
+                        Palette.Support, 13.sp, top = 10.dp,
+                    )
+                    Secondary("Leva até 2 min. A altitude do GPS é convertida para o nível do mar.", top = 4.dp)
+                    SecondaryButton("Calibrar agora", start)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun AboutScreen() {
     RoundPage {
@@ -460,7 +527,9 @@ fun AboutScreen() {
         AboutItem("Chuva", "Regra prática baseada na pressão do ar. Não é previsão do tempo.")
         AboutItem("Som", "Não é um SPL certificado. Calibre o offset comparando com um medidor no celular.")
         AboutItem("Pele", "Temperatura da pele do pulso. Não é temperatura corporal.")
-        AboutItem("Altitude", "Depende da pressão ao nível do mar (p0). Calibre com uma altitude conhecida.")
+        AboutItem("Altitude", "Depende da pressão ao nível do mar (p0). Calibre pelo GPS ou com uma altitude conhecida. A altitude do GPS tem precisão de 5 a 15 m.")
+        AboutItem("HRV", "RMSSD de 1 min parado, pelos intervalos entre batimentos do sensor óptico. Meça sempre no mesmo horário. Faixa pessoal: média ± desvio dos 7 dias anteriores. Não é diagnóstico.")
+        AboutItem("EDA", "Condutância da pele (µS) e picos de ativação. Muda com temperatura, suor e aperto da pulseira: compare você com você.")
     }
 }
 

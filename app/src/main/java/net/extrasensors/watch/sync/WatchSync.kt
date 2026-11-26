@@ -19,6 +19,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import net.extrasensors.shared.EdaPoint
+import net.extrasensors.shared.EdaSession
+import net.extrasensors.shared.HrvMeasurement
 import net.extrasensors.shared.SkinReading
 import net.extrasensors.shared.SunBucket
 import net.extrasensors.shared.SunDayTotal
@@ -58,6 +61,9 @@ object WatchSync {
                         m.getLong(SyncPaths.KEY_ACK_DAY),
                         m.getLong(SyncPaths.KEY_ACK_SKIN),
                         m.getLong(SyncPaths.KEY_ACK_APPLICATION),
+                        m.getLong(SyncPaths.KEY_ACK_HRV),
+                        m.getLong(SyncPaths.KEY_ACK_EDA_SESSION),
+                        m.getLong(SyncPaths.KEY_ACK_EDA_POINT),
                     )
                 )
             }
@@ -85,6 +91,12 @@ object WatchSync {
                     .map { SunDayTotal(it.epochDay, it.totalMs, it.updatedAt) },
                 skin = g.db.skin().after(ack.skinTime, MAX_ROWS).map { SkinReading(it.timeMillis, it.celsius) },
                 applications = sun.applicationsAfter(ack.applicationTime, MAX_ROWS).map { SunscreenApplication(it.timeMillis) },
+                hrv = g.db.stress().hrvAfter(ack.hrvTime, MAX_ROWS)
+                    .map { HrvMeasurement(it.timeMillis, it.rmssdMs, it.meanHr, it.beats, it.durationMs) },
+                edaSessions = g.db.stress().sessionsUpdatedAfter(ack.edaSessionUpdatedAt, MAX_ROWS)
+                    .map { EdaSession(it.startedAt, it.endedAt, it.source, it.updatedAt) },
+                edaPoints = g.db.stress().pointsAfter(ack.edaPointTime, MAX_ROWS)
+                    .map { EdaPoint(it.timeMillis, it.sessionStart, it.mean, it.min, it.max, it.peaks) },
             )
             g.state.setLastSyncPush(now)
             if (payload.isEmpty) return@withLock

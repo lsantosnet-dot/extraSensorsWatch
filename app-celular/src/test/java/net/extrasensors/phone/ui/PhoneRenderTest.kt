@@ -12,6 +12,9 @@ import androidx.compose.material3.lightColorScheme
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
 import net.extrasensors.phone.PhoneGraph
+import net.extrasensors.phone.data.EdaPointRow
+import net.extrasensors.phone.data.EdaSessionRow
+import net.extrasensors.phone.data.HrvRow
 import net.extrasensors.phone.data.SkinRow
 import net.extrasensors.phone.data.SunBucketRow
 import net.extrasensors.phone.data.SunDayRow
@@ -60,6 +63,16 @@ class PhoneRenderTest {
                 SkinRow(day.atTime(2 + i * 4, 0).atZone(zone).toInstant().toEpochMilli(), 33.2 + 0.4 * sin(i + d * 0.3))
             })
             if (d % 3 == 0) dao.upsertSunscreen(listOf(SunscreenRow(noon - 3_600_000L)))
+            val wake = day.atTime(7, 0).atZone(zone).toInstant().toEpochMilli()
+            dao.upsertHrv(listOf(HrvRow(wake, 45 + 10 * sin(d * 0.9) - (if (d == 1) 18 else 0), 60 + 3 * sin(d.toDouble()), 62, 60_000)))
+            if (d == 2) {
+                val st = day.atTime(15, 0).atZone(zone).toInstant().toEpochMilli()
+                dao.upsertEdaSessions(listOf(EdaSessionRow(st, st + 20 * 60_000L, 0)))
+                dao.upsertEdaPoints((0 until 120).map { i ->
+                    val v = 2.0 + 0.4 * sin(i / 15.0) + (if (i % 17 == 0) 0.3 else 0.0)
+                    EdaPointRow(st + i * 10_000L, st, v, v - 0.05, v + 0.08, if (i % 17 == 0) 1 else 0)
+                })
+            }
         }
     }
 
@@ -86,4 +99,5 @@ class PhoneRenderTest {
     @Test fun sol30dias() = shot("sol-30dias", null, "30 dias")
     @Test fun solHoje() = shot("sol-hoje", null, "Hoje")
     @Test fun pele7dias() = shot("pele-7dias", "Pele", null)
+    @Test fun estresse30dias() = shot("estresse-30dias", "Estresse", "30 dias")
 }

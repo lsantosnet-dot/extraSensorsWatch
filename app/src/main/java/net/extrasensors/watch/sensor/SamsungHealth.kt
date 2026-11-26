@@ -317,3 +317,89 @@ private class SamsungSweatSession(private val tracker: HealthTracker) : SweatSes
         runCatching { tracker.unsetEventListener() }
     }
 }
+
+// ---------------- Batimento contínuo (HRV) e atividade eletrodérmica (EDA) ----------------
+
+sealed interface HeartSample {
+    /** Intervalos entre batimentos (ms) marcados como válidos pelo sensor. */
+    data class Ibis(val ibis: List<Int>) : HeartSample
+    data class Failure(val message: String) : HeartSample
+}
+
+sealed interface EdaSample {
+    /** Condutância da pele (µS) com status válido. */
+    data class Reading(val timeMillis: Long, val microsiemens: Double) : EdaSample
+    data class Failure(val message: String) : EdaSample
+}
+
+private suspend fun SamsungHealthManager.supports(type: HealthTrackerType): Result<Boolean> =
+    when (val c = connect()) {
+        is HealthConnection.Connected -> Result.success(type in c.supported)
+        is HealthConnection.Failed -> Result.failure(IllegalStateException(c.message))
+        else -> Result.failure(IllegalStateException("Serviço de saúde desconectado."))
+    }
+
+/** Batimento contínuo do SDK; usado em medições curtas de HRV (1 min). */
+class SamsungHeartSource(private val health: SamsungHealthManager) {
+    suspend fun isSupported(): Result<Boolean> = health.supports(HealthTrackerType.HEART_RATE_CONTINUOUS)
+
+    fun samples(): Flow<HeartSample> = callbackFlow {
+        if (health.connect() !is HealthConnection.Connected) {
+            trySend(HeartSample.Failure((health.state.value as? HealthConnection.Failed)?.message ?: "Serviço de saúde desconectado."))
+            close()
+            return@callbackFlow
+        }
+        val tracker = health.tracker(HealthTrackerType.HEART_RATE_CONTINUOUS)
+        tracker.setEventListener(object : HealthTracker.TrackerEventListener {
+            override fun onDataReceived(list: MutableList<DataPoint>) {
+                list.forEach { dp ->
+                    val ibis = dp.getValue(ValueKey.HeartRateSet.IBI_LIST).orEmpty()
+                    val status = dp.getValue(ValueKey.HeartRateSet.IBI_STATUS_LIST).orEmpty()
+                    // Status 0 = intervalo válido; sem lista de status, aceita e deixa a filtragem do RMSSD decidir.
+                    val valid = ibis.filterIndexed { i, _ -> status.getOrNull(i)?.let { it == 0 } ?: true }
+                    if (valid.isNotEmpty()) trySend(HeartSample.Ibis(valid))
+                }
+            }
+
+            override fun onFlushCompleted() = Unit
+            override fun onError(e: HealthTracker.TrackerError) {
+                trySend(HeartSample.Failure(trackerErrorMessage(e)))
+                close()
+            }
+        })
+        awaitClose { runCatching { tracker.unsetEventListener() } }
+    }
+}
+
+/** Atividade eletrodérmica contínua (Galaxy Watch8 em diante), usada em sessões. */
+class SamsungEdaSource(private val health: SamsungHealthManager) {
+    suspend fun isSupported(): Result<Boolean> = health.supports(HealthTrackerType.EDA_CONTINUOUS)
+
+    fun samples(): Flow<EdaSample> = callbackFlow {
+        if (health.connect() !is HealthConnection.Connected) {
+            trySend(EdaSample.Failure((health.state.value as? HealthConnection.Failed)?.message ?: "Serviço de saúde desconectado."))
+            close()
+            return@callbackFlow
+        }
+        val tracker = health.tracker(HealthTrackerType.EDA_CONTINUOUS)
+        tracker.setEventListener(object : HealthTracker.TrackerEventListener {
+            override fun onDataReceived(list: MutableList<DataPoint>) {
+                list.forEach { dp ->
+                    val status = dp.getValue(ValueKey.EdaSet.STATUS) ?: -1
+                    val sc = dp.getValue(ValueKey.EdaSet.SKIN_CONDUCTANCE)
+                    if (status == 0 && sc != null && sc.isFinite() && sc >= 0f) {
+                        val t = dp.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis()
+                        trySend(EdaSample.Reading(t, sc.toDouble()))
+                    }
+                }
+            }
+
+            override fun onFlushCompleted() = Unit
+            override fun onError(e: HealthTracker.TrackerError) {
+                trySend(EdaSample.Failure(trackerErrorMessage(e)))
+                close()
+            }
+        })
+        awaitClose { runCatching { tracker.unsetEventListener() } }
+    }
+}

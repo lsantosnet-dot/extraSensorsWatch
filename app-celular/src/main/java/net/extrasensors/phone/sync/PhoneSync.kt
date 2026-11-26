@@ -15,6 +15,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import net.extrasensors.phone.data.EdaPointRow
+import net.extrasensors.phone.data.EdaSessionRow
+import net.extrasensors.phone.data.HrvRow
 import net.extrasensors.phone.data.SkinRow
 import net.extrasensors.phone.data.SunBucketRow
 import net.extrasensors.phone.data.SunDayRow
@@ -44,6 +47,9 @@ object PhoneSync {
         dao.upsertDays(p.days.map { SunDayRow(it.epochDay, it.totalMs) })
         dao.upsertSkin(p.skin.map { SkinRow(it.timeMillis, it.celsius) })
         dao.upsertSunscreen(p.applications.map { SunscreenRow(it.timeMillis) })
+        dao.upsertHrv(p.hrv.map { HrvRow(it.timeMillis, it.rmssdMs, it.meanHr, it.beats, it.durationMs) })
+        dao.upsertEdaSessions(p.edaSessions.map { EdaSessionRow(it.startedAt, it.endedAt, it.source) })
+        dao.upsertEdaPoints(p.edaPoints.map { EdaPointRow(it.timeMillis, it.sessionStart, it.mean, it.min, it.max, it.peaks) })
 
         val ack = g.prefs.ack.merge(SyncAck.of(p))
         g.prefs.ack = ack
@@ -53,6 +59,9 @@ object PhoneSync {
             dataMap.putLong(SyncPaths.KEY_ACK_DAY, ack.dayUpdatedAt)
             dataMap.putLong(SyncPaths.KEY_ACK_SKIN, ack.skinTime)
             dataMap.putLong(SyncPaths.KEY_ACK_APPLICATION, ack.applicationTime)
+            dataMap.putLong(SyncPaths.KEY_ACK_HRV, ack.hrvTime)
+            dataMap.putLong(SyncPaths.KEY_ACK_EDA_SESSION, ack.edaSessionUpdatedAt)
+            dataMap.putLong(SyncPaths.KEY_ACK_EDA_POINT, ack.edaPointTime)
         }.asPutDataRequest().setUrgent()
         Wearable.getDataClient(context).putDataItem(req).await()
     }

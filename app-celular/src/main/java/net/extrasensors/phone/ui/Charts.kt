@@ -251,3 +251,119 @@ fun SkinChart(
         }
     }
 }
+
+// ---------------- Estresse ----------------
+
+object StressColors {
+    val HrvLight = Color(0xFF0277BD)
+    val HrvDark = Color(0xFF7DD3FC)
+    val EdaLight = Color(0xFFC2410C)
+    val EdaDark = Color(0xFFFDBA74)
+    @Composable fun hrv() = if (isSystemInDarkTheme()) HrvDark else HrvLight
+    @Composable fun eda() = if (isSystemInDarkTheme()) EdaDark else EdaLight
+}
+
+/**
+ * HRV: um ponto por medição (RMSSD), ligado por linha, e a faixa pessoal (7 dias anteriores)
+ * sombreada em cada medição. Pontos abaixo da faixa ficam vazados.
+ */
+@Composable
+fun HrvChart(
+    points: List<net.extrasensors.phone.stats.HrvPoint>,
+    from: Long,
+    to: Long,
+    zone: ZoneId,
+    selected: Int?,
+    onSelect: (Int?) -> Unit,
+) {
+    val tm = rememberTextMeasurer()
+    val color = StressColors.hrv()
+    val axis = MaterialTheme.colorScheme.onSurfaceVariant
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    val values = points.flatMap { listOfNotNull(it.rmssdMs, it.low, it.high) }
+    val lo = ((values.minOrNull() ?: 20.0) * 0.85).coerceAtLeast(0.0)
+    val hi = (values.maxOrNull() ?: 80.0) * 1.1
+    val span = (to - from).coerceAtLeast(1)
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(220.dp)
+            .semantics { contentDescription = "Gráfico de HRV (RMSSD) com a faixa pessoal" }
+            .pointerInput(points) {
+                detectTapGestures { o ->
+                    if (points.isEmpty()) return@detectTapGestures
+                    val left = 44.dp.toPx(); val right = size.width - 12.dp.toPx()
+                    val xs = points.map { left + (it.timeMillis - from).toFloat() / span * (right - left) }
+                    val i = xs.indices.minBy { kotlin.math.abs(xs[it] - o.x) }
+                    onSelect(if (kotlin.math.abs(xs[i] - o.x) < 40.dp.toPx()) i else null)
+                }
+            },
+    ) {
+        val f = Frame(44.dp.toPx(), 8.dp.toPx(), size.width - 12.dp.toPx(), size.height - 24.dp.toPx())
+        fun y(v: Double) = (f.bottom - (v - lo) / (hi - lo) * f.height).toFloat()
+        fun x(t: Long) = f.left + (t - from).toFloat() / span * f.width
+        listOf(lo, (lo + hi) / 2, hi).forEach { v ->
+            drawLine(grid, Offset(f.left, y(v)), Offset(f.right, y(v)), strokeWidth = 1f)
+            axisText(tm, "${v.toInt()} ms", f.left - 6.dp.toPx(), y(v), axis, alignRight = true)
+        }
+        if (points.isEmpty()) return@Canvas
+        points.forEach { p ->
+            if (p.low != null && p.high != null) {
+                drawLine(color.copy(alpha = 0.18f), Offset(x(p.timeMillis), y(p.low)), Offset(x(p.timeMillis), y(p.high)),
+                    strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
+            }
+        }
+        val path = Path()
+        points.forEachIndexed { i, p -> if (i == 0) path.moveTo(x(p.timeMillis), y(p.rmssdMs)) else path.lineTo(x(p.timeMillis), y(p.rmssdMs)) }
+        drawPath(path, color.copy(alpha = 0.6f), style = Stroke(1.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        points.forEachIndexed { i, p ->
+            val r = (if (i == selected) 5.dp else 3.5.dp).toPx()
+            val c = Offset(x(p.timeMillis), y(p.rmssdMs))
+            if (p.status == net.extrasensors.shared.HrvStatus.BELOW) drawCircle(color, r, c, style = Stroke(2.dp.toPx()))
+            else drawCircle(color, r, c)
+        }
+        val days = (span / 86_400_000L).toInt().coerceAtLeast(1)
+        val step = max(1, ceil(days / 6.0).toInt())
+        for (d in 0 until days step step) {
+            val t = from + d * 86_400_000L
+            axisText(tm, label(t, false, zone), x(t), f.bottom + 12.dp.toPx(), axis, center = true)
+        }
+    }
+}
+
+/** Curva de uma sessão de EDA: média de 10 s, faixa mínimo–máximo e marcas dos picos de ativação. */
+@Composable
+fun EdaChart(points: List<net.extrasensors.phone.data.EdaPointRow>, start: Long, end: Long) {
+    val tm = rememberTextMeasurer()
+    val color = StressColors.eda()
+    val axis = MaterialTheme.colorScheme.onSurfaceVariant
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    val lo = (points.minOfOrNull { it.min } ?: 0.0)
+    val hi = (points.maxOfOrNull { it.max } ?: 1.0).let { if (it - lo < 0.2) lo + 0.2 else it }
+    val span = (end - start).coerceAtLeast(1)
+    Canvas(
+        Modifier.fillMaxWidth().height(200.dp).semantics { contentDescription = "Condutância da pele na sessão" },
+    ) {
+        val f = Frame(52.dp.toPx(), 8.dp.toPx(), size.width - 12.dp.toPx(), size.height - 28.dp.toPx())
+        fun y(v: Double) = (f.bottom - (v - lo) / (hi - lo) * f.height).toFloat()
+        fun x(t: Long) = f.left + (t - start).toFloat() / span * f.width
+        listOf(lo, (lo + hi) / 2, hi).forEach { v ->
+            drawLine(grid, Offset(f.left, y(v)), Offset(f.right, y(v)), strokeWidth = 1f)
+            axisText(tm, "%.2f µS".format(v).replace('.', ','), f.left - 6.dp.toPx(), y(v), axis, alignRight = true)
+        }
+        if (points.isEmpty()) return@Canvas
+        points.forEach { p ->
+            drawLine(color.copy(alpha = 0.22f), Offset(x(p.timeMillis), y(p.min)), Offset(x(p.timeMillis), y(p.max)),
+                strokeWidth = max(2f, f.width / points.size), cap = StrokeCap.Butt)
+            if (p.peaks > 0) drawCircle(color, 3.dp.toPx(), Offset(x(p.timeMillis), f.bottom + 6.dp.toPx()))
+        }
+        val path = Path()
+        points.forEachIndexed { i, p -> if (i == 0) path.moveTo(x(p.timeMillis), y(p.mean)) else path.lineTo(x(p.timeMillis), y(p.mean)) }
+        drawPath(path, color, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        val minutes = (span / 60_000L).toInt()
+        val step = max(1, ceil(minutes / 5.0).toInt())
+        for (m in 0..minutes step step) {
+            axisText(tm, "$m min", x(start + m * 60_000L), f.bottom + 18.dp.toPx(), axis, center = true)
+        }
+    }
+}

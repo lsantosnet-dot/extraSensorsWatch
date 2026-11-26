@@ -153,3 +153,71 @@ object Stats {
         return SkinSummary(v.average(), v.min(), v.max(), v.size)
     }
 }
+
+// ---------------- Estresse: HRV e EDA ----------------
+
+/** Medição de HRV com a faixa pessoal (7 dias anteriores) no momento da medição. */
+data class HrvPoint(
+    val timeMillis: Long,
+    val rmssdMs: Double,
+    val meanHr: Double,
+    val low: Double?,
+    val high: Double?,
+    val status: net.extrasensors.shared.HrvStatus?,
+)
+
+data class HrvSummary(val last: HrvPoint?, val meanRmssd: Double?, val meanHr: Double?, val count: Int)
+
+/** Sessão de EDA resumida: duração, nível médio (µS), picos por minuto e a curva de 10 s. */
+data class EdaSessionSummary(
+    val startedAt: Long,
+    val endedAt: Long?,
+    val source: Int,
+    val durationMs: Long,
+    val meanLevel: Double?,
+    val peaksPerMin: Double?,
+    val points: List<net.extrasensors.phone.data.EdaPointRow>,
+)
+
+object StressStats {
+    /**
+     * [all] deve incluir os 7 dias antes do período, para a faixa das primeiras medições.
+     * Só as medições dentro de [from, to) viram pontos.
+     */
+    fun hrvSeries(all: List<net.extrasensors.phone.data.HrvRow>, from: Long, to: Long): List<HrvPoint> {
+        val m = all.map { net.extrasensors.shared.HrvMeasurement(it.timeMillis, it.rmssdMs, it.meanHr, it.beats, it.durationMs) }
+        return all.filter { it.timeMillis in from until to }.map { r ->
+            val b = net.extrasensors.shared.HrvStats.baseline(m, r.timeMillis)
+            HrvPoint(r.timeMillis, r.rmssdMs, r.meanHr, b?.lowMs, b?.highMs, b?.status(r.rmssdMs))
+        }
+    }
+
+    fun hrvSummary(points: List<HrvPoint>): HrvSummary = HrvSummary(
+        last = points.lastOrNull(),
+        meanRmssd = points.takeIf { it.isNotEmpty() }?.map { it.rmssdMs }?.average(),
+        meanHr = points.takeIf { it.isNotEmpty() }?.map { it.meanHr }?.average(),
+        count = points.size,
+    )
+
+    fun edaSessions(
+        sessions: List<net.extrasensors.phone.data.EdaSessionRow>,
+        points: List<net.extrasensors.phone.data.EdaPointRow>,
+        now: Long,
+    ): List<EdaSessionSummary> {
+        val bySession = points.groupBy { it.sessionStart }
+        return sessions.map { s ->
+            val pts = bySession[s.startedAt].orEmpty()
+            val end = s.endedAt ?: pts.lastOrNull()?.let { it.timeMillis + 10_000 } ?: now
+            val minutes = (end - s.startedAt) / 60_000.0
+            EdaSessionSummary(
+                startedAt = s.startedAt,
+                endedAt = s.endedAt,
+                source = s.source,
+                durationMs = end - s.startedAt,
+                meanLevel = pts.takeIf { it.isNotEmpty() }?.map { it.mean }?.average(),
+                peaksPerMin = if (pts.isNotEmpty() && minutes > 0) pts.sumOf { it.peaks } / minutes else null,
+                points = pts,
+            )
+        }
+    }
+}

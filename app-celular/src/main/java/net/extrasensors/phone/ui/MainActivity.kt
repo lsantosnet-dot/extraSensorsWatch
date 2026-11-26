@@ -165,10 +165,15 @@ private fun Screen(vm: PhoneViewModel) {
             PrimaryTabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Sol") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Pele") })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Estresse") })
             }
             PeriodSelector(vm)
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (tab == 0) SunTab(vm) else SkinTab(vm)
+                when (tab) {
+                    0 -> SunTab(vm)
+                    1 -> SkinTab(vm)
+                    else -> StressTab(vm)
+                }
                 StatusCard(
                     vm,
                     onUv = {
@@ -375,6 +380,67 @@ private fun SkinTab(vm: PhoneViewModel) {
     }
     Text(
         "Temperatura da pele do pulso, não temperatura corporal. Compare com a sua própria média.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun StressTab(vm: PhoneViewModel) {
+    val ui by vm.stress.collectAsStateWithLifecycle()
+    val period by vm.period.collectAsStateWithLifecycle()
+    var selected by remember(period) { mutableStateOf<Int?>(null) }
+    var session by remember(period) { mutableStateOf<Long?>(null) }
+    val u = ui ?: return
+    val s = u.hrvSummary
+    StatGrid(
+        listOf(
+            Triple("HRV (última)", s.last?.let { "${num(it.rmssdMs, 0)} ms" } ?: "—", s.last?.status?.label),
+            Triple("Média no período", s.meanRmssd?.let { "${num(it, 0)} ms" } ?: "—", s.meanHr?.let { "FC média ${num(it, 0)} bpm" }),
+            Triple("Medições de HRV", "${s.count}", null),
+            Triple("Sessões de EDA", "${u.eda.size}", null),
+        )
+    )
+    ChartCard("HRV (RMSSD) e sua faixa dos 7 dias anteriores") {
+        if (u.hrv.isEmpty()) {
+            Empty("Sem medições de HRV neste período. Meça 1 min no relógio, sempre no mesmo horário.")
+        } else {
+            HrvChart(u.hrv, period.from(vm.zone), period.to(vm.zone), vm.zone, selected) { selected = it }
+            Legend(listOf(StressColors.hrv() to "RMSSD (vazado: abaixo da faixa)"))
+            selected?.let { i ->
+                val p = u.hrv[i]
+                val t = Instant.ofEpochMilli(p.timeMillis).atZone(vm.zone).format(dateTimeFmt)
+                val band = if (p.low != null && p.high != null) " · faixa ${num(p.low, 0)}–${num(p.high, 0)} ms" else " · faixa em formação"
+                Text("$t: ${num(p.rmssdMs, 0)} ms · ${num(p.meanHr, 0)} bpm$band",
+                    style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+    }
+    ChartCard("Atividade eletrodérmica (EDA) por sessão") {
+        if (u.eda.isEmpty()) {
+            Empty("Sem sessões de EDA neste período. Inicie uma no relógio (tela Ativação) ou numa corrida.")
+        } else {
+            val chosen = u.eda.firstOrNull { it.startedAt == session } ?: u.eda.first()
+            EdaChart(chosen.points, chosen.startedAt, chosen.startedAt + chosen.durationMs)
+            Legend(listOf(StressColors.eda() to "Condutância (µS) · pontos embaixo: picos de ativação"))
+            Spacer(Modifier.height(8.dp))
+            u.eda.take(20).forEach { e ->
+                val t = Instant.ofEpochMilli(e.startedAt).atZone(vm.zone).format(dateTimeFmt)
+                val origin = if (e.source == 1) " · corrida" else ""
+                val level = e.meanLevel?.let { " · ${num(it, 2)} µS" } ?: ""
+                val peaks = e.peaksPerMin?.let { " · ${num(it, 1)} picos/min" } ?: ""
+                TextButton(onClick = { session = e.startedAt }) {
+                    Text(
+                        "$t · ${duration(e.durationMs)}$level$peaks$origin",
+                        fontWeight = if (e.startedAt == chosen.startedAt) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                }
+            }
+        }
+    }
+    Text(
+        "HRV: RMSSD de 1 min parado; compare com a sua faixa, não com outras pessoas. EDA muda com temperatura, " +
+            "suor e aperto da pulseira. Não são diagnóstico.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )

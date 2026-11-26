@@ -22,6 +22,10 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Decibelímetro -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- GPS do relógio para calibrar a altitude (sem internet) -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <!-- Cadência de passos para o tracker de perda de suor -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <!-- Samsung Health Sensor SDK: BODY_SENSORS até o Android 15; no 16+ as permissões granulares -->
@@ -75,6 +79,10 @@
 
         <receiver
             android:name=".service.AlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".service.HrvReminderReceiver"
             android:exported="false" />
 
         <!-- Sincronização com o app do celular (Wearable Data Layer, por Bluetooth) -->

@@ -11,7 +11,7 @@ Dois apps de uso pessoal no mesmo repositório:
 - Português do Brasil, sem anúncios. Somente dados reais: sem valores de exemplo, simulação ou modo demo.
 - O **relógio não acessa a internet**. Ele troca dados só com o celular, por Bluetooth (Wearable Data Layer).
 - O **celular** acessa a internet só para buscar a previsão do índice UV (Open-Meteo), com a localização arredondada a ~1 km.
-- Especificações: [`docs/SPEC.md`](docs/SPEC.md) (relógio) e [`docs/SPEC-celular.md`](docs/SPEC-celular.md) (celular e UV).
+- Especificações: [`docs/SPEC.md`](docs/SPEC.md) (relógio), [`docs/SPEC-celular.md`](docs/SPEC-celular.md) (celular e UV) e [`docs/SPEC-estresse.md`](docs/SPEC-estresse.md) (HRV, EDA e GPS).
 
 ## Instalar
 
@@ -91,6 +91,15 @@ Também há uma **complicação "Sol"** para o mostrador, com o tempo desde o pr
 - **Dose:** índice UV 1 = 25 mW/m² = 0,9 SED por hora. A dose só soma quando o relógio detecta sol (luz forte e relógio no pulso), e soma só parte do UV previsto conforme a luz: 30% abaixo de 25 mil lux (sombra clara, céu encoberto), 60% de 25 a 50 mil lux e 100% a partir de 50 mil lux (sol direto).
 - **Tipo de pele:** em Ajustes › Tipo de pele (padrão: tipo II). O app do celular mostra a referência do tipo II.
 - **No celular:** abas **Sol** e **Pele**; filtros Hoje, 7, 30 e 90 dias, 1 ano e período personalizado. Tocar numa barra ou ponto mostra os valores. "Exportar CSV" compartilha o histórico completo em 5 arquivos.
+
+## HRV, EDA e GPS (etapa 3)
+
+- **Recuperação (HRV):** medição de 1 min parado (RMSSD), com lembrete diário (padrão 7h) e comparação com a sua faixa dos 7 dias anteriores.
+- **Ativação (EDA):** sessões de condutância da pele com picos de ativação, manuais ou junto com a corrida da tela Suor. Do Galaxy Watch8 em diante.
+- **GPS:** calibra a altitude sem internet, pelo botão ou ao iniciar uma Subida.
+- **No celular:** aba **Estresse** com os gráficos de HRV e de EDA, e CSVs no "Exportar CSV".
+
+Detalhes em [`docs/SPEC-estresse.md`](docs/SPEC-estresse.md).
 
 ## Decisões técnicas
 

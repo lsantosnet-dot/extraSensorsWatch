@@ -36,11 +36,13 @@ import net.extrasensors.watch.ui.pages.SoundPage
 import net.extrasensors.watch.ui.pages.SummaryPage
 import net.extrasensors.watch.ui.pages.SunPage
 import net.extrasensors.watch.ui.pages.SweatPage
+import net.extrasensors.watch.ui.pages.HrvPage
+import net.extrasensors.watch.ui.pages.EdaPage
 
 class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_PAGE = "page"
-        const val SETTINGS_PAGE = 9
+        const val SETTINGS_PAGE = 11
     }
 
     /** Pedidos de troca de página vindos de notificações e da complicação. */
@@ -74,6 +76,7 @@ private object Routes {
     const val ABOUT = "about"
     const val SKIN_TYPE = "skin_type"
     const val DIAGNOSTICS = "diagnostics"
+    const val GPS = "gps"
     fun edit(s: NumericSetting) = "edit/${s.name}"
 }
 
@@ -108,6 +111,7 @@ private fun App(g: AppGraph, initialPage: Int, pageRequests: MutableSharedFlow<I
                 onGender = { nav.navigate(Routes.GENDER) },
                 onSkinType = { nav.navigate(Routes.SKIN_TYPE) },
                 onDiagnostics = { nav.navigate(Routes.DIAGNOSTICS) },
+                onGps = { nav.navigate(Routes.GPS) },
                 onAbout = { nav.navigate(Routes.ABOUT) },
             )
         }
@@ -121,6 +125,7 @@ private fun App(g: AppGraph, initialPage: Int, pageRequests: MutableSharedFlow<I
         composable(Routes.ABOUT) { AboutScreen() }
         composable(Routes.SKIN_TYPE) { SkinTypeScreen(g) { nav.popBackStack() } }
         composable(Routes.DIAGNOSTICS) { DiagnosticsScreen(g) }
+        composable(Routes.GPS) { GpsCalibrationScreen(g) }
     }
 }
 
@@ -162,6 +167,8 @@ private fun Pager(
                     reset = { send(SensorService.ACTION_SWEAT_RESET) },
                     openSettings = openSettingsList,
                 )
+                9 -> HrvPage(g, measure = { send(SensorService.ACTION_HRV_MEASURE) }, reset = { send(SensorService.ACTION_HRV_RESET) })
+                10 -> EdaPage(g, start = { send(SensorService.ACTION_EDA_START) }, stop = { send(SensorService.ACTION_EDA_STOP) })
                 else -> SettingsPage(open = openSettingsList, about = openAbout)
             }
         }
